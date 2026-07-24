@@ -1,0 +1,12 @@
+# Secrets
+.env
+
+# Raw and generated data
+data/
+db/
+cache/
+
+# Jupyter
+.ipynb_checkpoints/
+.DS_Store
+.claude/
