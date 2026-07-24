@@ -27,9 +27,10 @@
 - 접속 정보는 `.env`로 관리하고 Git에서 제외한다.
 
 다음 저장소를 구조·문체·SQL·노트북 작성 방식의 기준으로 사용한다.
+(로컬에서는 이 저장소와 같은 상위 폴더에 위치)
 
-- 이커머스: `/Users/taehyunkim/data_analysis/dacon_e_commerce`
-- 패션 플랫폼: `/Users/taehyunkim/data_analysis/fashion_platform_analysis`
+- 이커머스: [dacon_e_commerce](https://github.com/kth530/dacon_e_commerce)
+- 패션 플랫폼: [fashion_platform_analysis](https://github.com/kth530/fashion_platform_analysis)
 
 기준 프로젝트는 읽기 전용이다. 사용자가 명시적으로 요청하지 않는 한 어떤 파일도 수정하지 않는다.
 
@@ -70,7 +71,8 @@ A/B 테스트는 분석마다 붙이지 않는다. 실험·노출 로그가 없�
 
 ## Rules
 
-작업 대상 파일에 따라 다음 규칙을 적용한다.
+작업 대상 파일에 따라 다음 규칙 문서를 적용한다.
+(규칙 문서는 `.claude/rules/`에 포함되어 있다.)
 
 - 노트북 작성: `.claude/rules/notebook-workflow.md`
 - SQL 작성: `.claude/rules/sql-conventions.md`

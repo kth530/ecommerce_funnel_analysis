@@ -9,4 +9,3 @@ cache/
 # Jupyter
 .ipynb_checkpoints/
 .DS_Store
-.claude/
