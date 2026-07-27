@@ -5,7 +5,7 @@
 코스메틱 이커머스 이벤트 로그에서 `view → cart → purchase` 전환 흐름을 정의하고, 이탈이 집중되는 구간과 상품군을 파악해 개선 우선순위와 후속 검증안을 제안한다.
 
 - 데이터 출처: https://www.kaggle.com/datasets/mkechinov/ecommerce-events-history-in-cosmetics-shop
-- 현재 단계: 01 완결(실행·방침 확정·docs/metrics.md 작성). 05 구매 여정은 조건부 유지 — 04 완성 후 04에 없는 독립 인사이트 2개 미만이면 04에 흡수. 다음: 02 마트(mart_session) + 03 심화 EDA.
+- 현재 단계: 02·03 완결(mart_session 4,499,479행, raw 대조 검증 a-c 통과, 심화 EDA 실행·결론 작성). 05 구매 여정은 조건부 유지 — 04 완성 후 04에 없는 독립 인사이트 2개 미만이면 04에 흡수. 다음: 04 퍼널 — 직행 세션(선행 view 없는 cart/purchase 시작 세션) 처리 방침이 첫 설계 결정.
 - 분석 결과가 나오기 전에는 수치·결론·성과를 미리 작성하지 않는다.
 
 ## 환경
