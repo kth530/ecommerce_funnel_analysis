@@ -1,3 +1,4 @@
+-- 01 raw EDA·품질 진단 집계
 -- name: base_scalars | 전체 행수·기간·컬럼 결측·가격 부호 (단일 스캔으로 통합)
 -- overview의 행수·기간, null_profile, price_anomaly를 한 번의 전체 스캔으로 합쳤다.
 SELECT
