@@ -382,3 +382,273 @@ FROM information_schema.statistics
 WHERE table_schema = DATABASE()
   AND table_name = 'mart_session_product'
   AND index_name = 'PRIMARY'
+
+-- name: create_mart_user_product_session | 구매 여정용 세션·상품 마트 생성 (docs/metrics.md 방침 집행)
+-- 처리 방침의 단일 원천은 docs/metrics.md. 이 스크립트가 그 방침을 집행한다.
+-- 분석 단위는 유효 세션·상품(user_session × product_id) 1행이다.
+-- view·cart·remove·purchase의 최초·최종 시각을 보존해 06에서 raw를 다시 조회하지 않는다.
+-- 구매 전 행동은 strict(event_time < first_purchase_at) 기준이며 동일 시각은 제외한다.
+DROP TEMPORARY TABLE IF EXISTS tmp_user_product_session_base;
+DROP TEMPORARY TABLE IF EXISTS tmp_user_product_before_purchase;
+DROP TABLE IF EXISTS mart_user_product_session;
+
+CREATE TEMPORARY TABLE tmp_user_product_session_base ENGINE=InnoDB AS
+SELECT
+    e.user_session,
+    e.product_id,
+    m.user_id,
+    m.session_start,
+    m.session_end,
+    SUM(e.event_type = 'view') AS views,
+    SUM(e.event_type = 'cart') AS carts,
+    SUM(e.event_type = 'remove_from_cart') AS removes,
+    SUM(e.event_type = 'purchase') AS purchases,
+    MIN(CASE WHEN e.event_type = 'view' THEN e.event_time END) AS first_view_at,
+    MAX(CASE WHEN e.event_type = 'view' THEN e.event_time END) AS last_view_at,
+    MIN(CASE WHEN e.event_type = 'cart' THEN e.event_time END) AS first_cart_at,
+    MAX(CASE WHEN e.event_type = 'cart' THEN e.event_time END) AS last_cart_at,
+    MIN(CASE WHEN e.event_type = 'remove_from_cart' THEN e.event_time END) AS first_remove_at,
+    MAX(CASE WHEN e.event_type = 'remove_from_cart' THEN e.event_time END) AS last_remove_at,
+    MIN(CASE WHEN e.event_type = 'purchase' THEN e.event_time END) AS first_purchase_at,
+    MAX(CASE WHEN e.event_type = 'purchase' THEN e.event_time END) AS last_purchase_at,
+    -- metrics.md 방침(revenue): purchase·price>0만 합산한다.
+    SUM(IF(e.event_type = 'purchase' AND e.price > 0, e.price, 0)) AS revenue
+FROM events e
+JOIN mart_session m ON e.user_session = m.user_session
+WHERE e.price >= 0                                           -- metrics.md 방침: price<0 제외, price=0 포함
+  AND e.event_type IN ('view', 'cart', 'remove_from_cart', 'purchase')
+  AND e.product_id IS NOT NULL
+GROUP BY
+    e.user_session,
+    e.product_id,
+    m.user_id,
+    m.session_start,
+    m.session_end;
+
+ALTER TABLE tmp_user_product_session_base
+    ADD PRIMARY KEY (user_session, product_id);
+
+CREATE TEMPORARY TABLE tmp_user_product_before_purchase ENGINE=InnoDB AS
+SELECT
+    e.user_session,
+    e.product_id,
+    MAX(CASE
+        WHEN e.event_type = 'view' AND e.event_time < b.first_purchase_at
+        THEN e.event_time
+    END) AS last_view_before_first_purchase_at,
+    MAX(CASE
+        WHEN e.event_type = 'cart' AND e.event_time < b.first_purchase_at
+        THEN e.event_time
+    END) AS last_cart_before_first_purchase_at,
+    MAX(CASE
+        WHEN e.event_type = 'remove_from_cart' AND e.event_time < b.first_purchase_at
+        THEN e.event_time
+    END) AS last_remove_before_first_purchase_at
+FROM events e
+JOIN tmp_user_product_session_base b
+  ON e.user_session = b.user_session
+ AND e.product_id = b.product_id
+WHERE b.first_purchase_at IS NOT NULL
+  AND e.price >= 0
+  AND e.event_type IN ('view', 'cart', 'remove_from_cart')
+GROUP BY e.user_session, e.product_id;
+
+ALTER TABLE tmp_user_product_before_purchase
+    ADD PRIMARY KEY (user_session, product_id);
+
+CREATE TABLE mart_user_product_session AS
+SELECT
+    b.user_session,
+    b.product_id,
+    b.user_id,
+    b.session_start,
+    b.session_end,
+    b.views,
+    b.carts,
+    b.removes,
+    b.purchases,
+    b.first_view_at,
+    b.last_view_at,
+    b.first_cart_at,
+    b.last_cart_at,
+    b.first_remove_at,
+    b.last_remove_at,
+    b.first_purchase_at,
+    b.last_purchase_at,
+    a.last_view_before_first_purchase_at,
+    a.last_cart_before_first_purchase_at,
+    a.last_remove_before_first_purchase_at,
+    b.revenue,
+    IF(COALESCE(sp.has_cart_after_view, 0) = 1, 1, 0) AS has_cart_after_view,
+    IF(COALESCE(sp.has_purchase_after_view_cart, 0) = 1, 1, 0)
+        AS has_purchase_after_view_cart,
+    IF(
+        b.first_view_at < a.last_cart_before_first_purchase_at,
+        1,
+        0
+    ) AS has_view_cart_before_first_purchase
+FROM tmp_user_product_session_base b
+LEFT JOIN tmp_user_product_before_purchase a
+  ON b.user_session = a.user_session
+ AND b.product_id = a.product_id
+LEFT JOIN mart_session_product sp
+  ON b.user_session = sp.user_session
+ AND b.product_id = sp.product_id;
+
+ALTER TABLE mart_user_product_session
+    ADD PRIMARY KEY (user_session, product_id);
+
+CREATE INDEX idx_mups_user_product_start
+    ON mart_user_product_session (user_id, product_id, session_start, user_session);
+
+CREATE INDEX idx_mups_product_start
+    ON mart_user_product_session (product_id, session_start);
+
+CREATE INDEX idx_mups_first_purchase
+    ON mart_user_product_session (first_purchase_at);
+
+DROP TEMPORARY TABLE tmp_user_product_before_purchase;
+DROP TEMPORARY TABLE tmp_user_product_session_base;
+
+-- name: raw_user_product_session_reconciliation | 검증a: raw 집계와 여정 마트의 행수·카운트·시각 대조
+WITH raw_grouped AS (
+    SELECT
+        e.user_session,
+        e.product_id,
+        MIN(e.user_id) AS user_id,
+        SUM(e.event_type = 'view') AS views,
+        SUM(e.event_type = 'cart') AS carts,
+        SUM(e.event_type = 'remove_from_cart') AS removes,
+        SUM(e.event_type = 'purchase') AS purchases,
+        MIN(CASE WHEN e.event_type = 'view' THEN e.event_time END) AS first_view_at,
+        MAX(CASE WHEN e.event_type = 'view' THEN e.event_time END) AS last_view_at,
+        MIN(CASE WHEN e.event_type = 'cart' THEN e.event_time END) AS first_cart_at,
+        MAX(CASE WHEN e.event_type = 'cart' THEN e.event_time END) AS last_cart_at,
+        MIN(CASE WHEN e.event_type = 'remove_from_cart' THEN e.event_time END) AS first_remove_at,
+        MAX(CASE WHEN e.event_type = 'remove_from_cart' THEN e.event_time END) AS last_remove_at,
+        MIN(CASE WHEN e.event_type = 'purchase' THEN e.event_time END) AS first_purchase_at,
+        MAX(CASE WHEN e.event_type = 'purchase' THEN e.event_time END) AS last_purchase_at,
+        SUM(IF(e.event_type = 'purchase' AND e.price > 0, e.price, 0)) AS revenue
+    FROM events e
+    JOIN mart_session m ON e.user_session = m.user_session
+    WHERE e.price >= 0
+      AND e.event_type IN ('view', 'cart', 'remove_from_cart', 'purchase')
+      AND e.product_id IS NOT NULL
+    GROUP BY e.user_session, e.product_id
+)
+SELECT
+    COUNT(*) AS raw_행수,
+    SUM(r.views) AS raw_views,
+    SUM(r.carts) AS raw_carts,
+    SUM(r.removes) AS raw_removes,
+    SUM(r.purchases) AS raw_purchases,
+    SUM(r.revenue) AS raw_revenue,
+    SUM(j.user_session IS NULL) AS 마트누락_행수,
+    SUM(NOT (j.user_id <=> r.user_id)) AS user_id_불일치,
+    SUM(j.views <> r.views OR j.carts <> r.carts
+        OR j.removes <> r.removes OR j.purchases <> r.purchases) AS 카운트_불일치,
+    SUM(NOT (j.first_view_at <=> r.first_view_at)
+        OR NOT (j.last_view_at <=> r.last_view_at)
+        OR NOT (j.first_cart_at <=> r.first_cart_at)
+        OR NOT (j.last_cart_at <=> r.last_cart_at)
+        OR NOT (j.first_remove_at <=> r.first_remove_at)
+        OR NOT (j.last_remove_at <=> r.last_remove_at)
+        OR NOT (j.first_purchase_at <=> r.first_purchase_at)
+        OR NOT (j.last_purchase_at <=> r.last_purchase_at)) AS 시각_불일치,
+    SUM(ABS(j.revenue - r.revenue) > 0.0001) AS revenue_불일치
+FROM raw_grouped r
+LEFT JOIN mart_user_product_session j
+  ON r.user_session = j.user_session
+ AND r.product_id = j.product_id;
+
+-- name: raw_user_product_before_purchase_reconciliation | 검증b: 최초 구매 전 행동 시각 raw 대조
+WITH raw_before_purchase AS (
+    SELECT
+        j.user_session,
+        j.product_id,
+        MAX(CASE
+            WHEN e.event_type = 'view' AND e.event_time < j.first_purchase_at
+            THEN e.event_time
+        END) AS last_view_before_first_purchase_at,
+        MAX(CASE
+            WHEN e.event_type = 'cart' AND e.event_time < j.first_purchase_at
+            THEN e.event_time
+        END) AS last_cart_before_first_purchase_at,
+        MAX(CASE
+            WHEN e.event_type = 'remove_from_cart' AND e.event_time < j.first_purchase_at
+            THEN e.event_time
+        END) AS last_remove_before_first_purchase_at
+    FROM mart_user_product_session j
+    LEFT JOIN events e
+      ON j.user_session = e.user_session
+     AND j.product_id = e.product_id
+     AND e.price >= 0
+     AND e.event_type IN ('view', 'cart', 'remove_from_cart')
+    WHERE j.first_purchase_at IS NOT NULL
+    GROUP BY j.user_session, j.product_id
+)
+SELECT
+    COUNT(*) AS raw_구매전행동_행수,
+    SUM(NOT (j.last_view_before_first_purchase_at
+        <=> r.last_view_before_first_purchase_at)
+        OR NOT (j.last_cart_before_first_purchase_at
+        <=> r.last_cart_before_first_purchase_at)
+        OR NOT (j.last_remove_before_first_purchase_at
+        <=> r.last_remove_before_first_purchase_at)) AS 구매전행동시각_불일치
+FROM raw_before_purchase r
+JOIN mart_user_product_session j
+  ON r.user_session = j.user_session
+ AND r.product_id = j.product_id;
+
+-- name: mart_user_product_session_summary | 여정 마트 행수·카운트·revenue 합
+SELECT
+    COUNT(*) AS 마트_행수,
+    SUM(purchases > 0) AS 마트_구매행수,
+    SUM(views) AS 마트_views,
+    SUM(carts) AS 마트_carts,
+    SUM(removes) AS 마트_removes,
+    SUM(purchases) AS 마트_purchases,
+    SUM(revenue) AS 마트_revenue
+FROM mart_user_product_session;
+
+-- name: mart_user_product_session_flags | 검증c: 기존 동일 상품 순차 플래그와 대조
+SELECT
+    (SELECT SUM(has_cart_after_view) FROM mart_user_product_session) AS 여정마트_stage2,
+    (SELECT SUM(has_cart_after_view) FROM mart_session_product) AS 기존마트_stage2,
+    (SELECT SUM(has_purchase_after_view_cart) FROM mart_user_product_session) AS 여정마트_stage3,
+    (SELECT SUM(has_purchase_after_view_cart) FROM mart_session_product) AS 기존마트_stage3;
+
+-- name: mart_user_product_session_logic | 검증d: 시각·카운트·플래그 논리 관계
+SELECT
+    SUM((views = 0 AND (first_view_at IS NOT NULL OR last_view_at IS NOT NULL))
+        OR (views > 0 AND (first_view_at IS NULL OR last_view_at IS NULL))) AS view_시각오류,
+    SUM((carts = 0 AND (first_cart_at IS NOT NULL OR last_cart_at IS NOT NULL))
+        OR (carts > 0 AND (first_cart_at IS NULL OR last_cart_at IS NULL))) AS cart_시각오류,
+    SUM((removes = 0 AND (first_remove_at IS NOT NULL OR last_remove_at IS NOT NULL))
+        OR (removes > 0 AND (first_remove_at IS NULL OR last_remove_at IS NULL))) AS remove_시각오류,
+    SUM((purchases = 0 AND (first_purchase_at IS NOT NULL OR last_purchase_at IS NOT NULL))
+        OR (purchases > 0 AND (first_purchase_at IS NULL OR last_purchase_at IS NULL))) AS purchase_시각오류,
+    SUM(first_view_at > last_view_at OR first_cart_at > last_cart_at
+        OR first_remove_at > last_remove_at OR first_purchase_at > last_purchase_at) AS 최초최종_역전,
+    SUM(last_view_before_first_purchase_at >= first_purchase_at
+        OR last_cart_before_first_purchase_at >= first_purchase_at
+        OR last_remove_before_first_purchase_at >= first_purchase_at) AS 구매전시각_오류,
+    SUM(has_cart_after_view NOT IN (0, 1)
+        OR has_purchase_after_view_cart NOT IN (0, 1)
+        OR has_view_cart_before_first_purchase NOT IN (0, 1)) AS 플래그값_오류,
+    SUM(has_purchase_after_view_cart = 1 AND has_cart_after_view = 0) AS 순차포함관계_오류,
+    SUM(has_view_cart_before_first_purchase = 1
+        AND (first_view_at IS NULL
+             OR last_cart_before_first_purchase_at IS NULL
+             OR first_purchase_at IS NULL)) AS 최초구매경로_오류
+FROM mart_user_product_session;
+
+-- name: mart_user_product_session_key | 검증e: 복합 기본키·분석 인덱스 구성
+SELECT
+    SUM(index_name = 'PRIMARY') AS 기본키_열수,
+    SUM(index_name = 'idx_mups_user_product_start') AS 사용자상품시각_인덱스열수,
+    SUM(index_name = 'idx_mups_product_start') AS 상품시각_인덱스열수,
+    SUM(index_name = 'idx_mups_first_purchase') AS 구매시각_인덱스열수
+FROM information_schema.statistics
+WHERE table_schema = DATABASE()
+  AND table_name = 'mart_user_product_session';

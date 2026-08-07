@@ -1,5 +1,5 @@
 -- 04 퍼널 EDA 집계
--- name: fn_session_funnel | 세션 전체 strict 순차 퍼널
+-- name: fn_session_funnel | 세션 전체 strict 3단계 순차 퍼널
 -- 분석 단위는 세션. 분자는 항상 직전 단계 분모의 부분집합이다.
 SELECT
     SUM(views > 0) AS view_도달,
@@ -22,9 +22,14 @@ FROM mart_session
 
 -- name: fn_boundary | view → cart → purchase 순서와 다른 세션 규모
 -- first_event_type은 판정에 사용하지 않는다. 각 집계는 독립 조건이므로 서로 겹칠 수 있다.
+-- view_purchase동반_cart미도달은 도달 여부만 본 값이며 strict view→purchase로 해석하지 않는다.
 SELECT
+    SUM(purchases > 0) AS purchase도달_전체,
     SUM(views = 0 AND carts > 0) AS view없이_cart,
     SUM(views = 0 AND purchases > 0) AS view없이_purchase,
+    SUM(views > 0 AND purchases > 0) AS view_purchase동반,
+    SUM(views > 0 AND carts = 0 AND purchases > 0) AS view_purchase동반_cart미도달,
+    SUM(views > 0 AND carts > 0 AND purchases > 0) AS view_cart_purchase동반,
     SUM(views > 0 AND carts > 0 AND has_cart_after_view = 0) AS view_cart있으나_순서미확인,
     SUM(has_cart_after_view = 1
         AND purchases > 0
@@ -34,7 +39,7 @@ SELECT
     COUNT(*) AS 유효세션
 FROM mart_session
 
--- name: fn_seg_dow | 요일별 strict 순차 퍼널 (세션 단위, session_start 기준, 1=일 ~ 7=토)
+-- name: fn_seg_dow | 요일별 strict 3단계 순차 퍼널 (세션 단위, session_start 기준, 1=일 ~ 7=토)
 SELECT
     DAYOFWEEK(session_start) AS 요일번호,
     SUM(views > 0) AS view_도달,
@@ -45,7 +50,7 @@ FROM mart_session
 GROUP BY 요일번호
 ORDER BY 요일번호
 
--- name: fn_seg_month | 월별 strict 순차 퍼널과 관측 범위 (세션 단위, session_start 기준)
+-- name: fn_seg_month | 월별 strict 3단계 순차 퍼널과 관측 범위 (세션 단위, session_start 기준)
 -- 양끝 월의 완결 여부를 확인할 수 있도록 월별 MIN·MAX session_start와 관측 일수를 함께 반환한다.
 SELECT
     DATE_FORMAT(session_start, '%Y-%m') AS 월,
@@ -60,7 +65,7 @@ FROM mart_session
 GROUP BY 월
 ORDER BY 월
 
--- name: fn_seg_events | total_events 구간별 strict 순차 퍼널 (세션 단위)
+-- name: fn_seg_events | total_events 구간별 strict 3단계 순차 퍼널 (세션 단위)
 SELECT
     CASE
         WHEN total_events <= 1 THEN '0-1'
@@ -94,7 +99,7 @@ WHERE views > 0
 GROUP BY 구간
 ORDER BY MIN(views)
 
--- name: fn_seg_visit | 사용자당 관측 세션 수별 strict 순차 퍼널 (세션 단위)
+-- name: fn_seg_visit | 사용자당 관측 세션 수별 strict 3단계 순차 퍼널 (세션 단위)
 -- 사용자를 관측 기간 내 총 세션 1개와 2개 이상으로 나누며, 신규 여부나 개별 세션의 방문 차수를 뜻하지 않는다.
 SELECT
     CASE WHEN uc.n = 1 THEN '1세션 사용자' ELSE '2+세션 사용자' END AS 세그먼트,
@@ -254,7 +259,7 @@ SELECT
 FROM mart_session_product sp
 LEFT JOIN mart_product p ON sp.product_id = p.product_id
 
--- name: fn_product_funnel | 동일 상품 strict 순차 퍼널 (세션·상품 단위)
+-- name: fn_product_funnel | 동일 상품 strict 3단계 순차 퍼널 (세션·상품 단위)
 SELECT
     SUM(views > 0) AS view_도달,
     SUM(has_cart_after_view) AS view_cart_순차,
@@ -265,7 +270,7 @@ SELECT
     COUNT(*) AS session_product수
 FROM mart_session_product
 
--- name: fn_product_category | 카테고리별 동일 상품 strict 순차 퍼널
+-- name: fn_product_category | 카테고리별 동일 상품 strict 3단계 순차 퍼널
 SELECT
     p.category_id,
     COUNT(DISTINCT sp.product_id) AS 상품수,
@@ -286,7 +291,7 @@ SELECT
 FROM mart_product
 GROUP BY category_id
 
--- name: fn_product_price | 가격대별 동일 상품 strict 순차 퍼널
+-- name: fn_product_price | 가격대별 동일 상품 strict 3단계 순차 퍼널
 SELECT
     CASE
         WHEN p.avg_price IS NULL THEN '가격미상'
@@ -307,7 +312,7 @@ JOIN mart_product p ON sp.product_id = p.product_id
 GROUP BY 가격대
 ORDER BY MIN(p.avg_price)
 
--- name: fn_product_brand | brand 결측 여부별 동일 상품 strict 순차 퍼널
+-- name: fn_product_brand | brand 결측 여부별 동일 상품 strict 3단계 순차 퍼널
 SELECT
     CASE WHEN p.brand = 'unknown' THEN 'unknown' ELSE 'known' END AS brand_구분,
     COUNT(DISTINCT sp.product_id) AS 상품수,
