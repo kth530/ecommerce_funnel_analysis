@@ -525,6 +525,104 @@ SELECT
 FROM latest_prior_state
 GROUP BY remove월 WITH ROLLUP;
 
+-- name: pj_cart_purchase_daily_hazard | 사용자별 최초 cart 이후 일별 동일 상품 구매 위험률
+-- 분석 단위는 사용자별 최초 관측 cart 한 건이다. 결국 구매한 사용자만 남기지 않고,
+-- 각 구간 시작까지 동일 상품을 구매하지 않은 전체 위험집단을 분모로 둔다.
+-- 우측 절단을 피하려고 최초 cart 이후 7일을 끝까지 관측할 수 있는 공통 cohort만 포함한다.
+-- 이 지표는 자연 구매가 시간에 따라 어떻게 분포하는지 보여주는 관찰값이며,
+-- 알림 효과나 최적 발송 시점을 뜻하지 않는다.
+WITH observation_period AS (
+    SELECT MAX(session_end) AS 전체관측_종료시각
+    FROM mart_user_product_session
+), first_cart_time_per_user AS (
+    SELECT
+        user_id,
+        MIN(first_cart_at) AS cart_기준시각
+    FROM mart_user_product_session
+    WHERE first_cart_at IS NOT NULL
+    GROUP BY user_id
+), first_cart_per_user AS (
+    SELECT
+        first_cart.user_id,
+        MIN(cart_row.product_id) AS product_id,
+        first_cart.cart_기준시각
+    FROM first_cart_time_per_user first_cart
+    JOIN mart_user_product_session cart_row
+      ON first_cart.user_id = cart_row.user_id
+     AND first_cart.cart_기준시각 = cart_row.first_cart_at
+    GROUP BY first_cart.user_id, first_cart.cart_기준시각
+), selected_cart_context AS (
+    SELECT
+        selected.user_id,
+        selected.product_id,
+        selected.cart_기준시각,
+        period.전체관측_종료시각,
+        MIN(CASE
+            WHEN history.first_purchase_at > selected.cart_기준시각
+                THEN history.first_purchase_at
+            WHEN history.last_purchase_at > selected.cart_기준시각
+                THEN history.last_purchase_at
+        END) AS cart이후_다음purchase시각
+    FROM first_cart_per_user selected
+    CROSS JOIN observation_period period
+    LEFT JOIN mart_user_product_session history
+      ON selected.user_id = history.user_id
+     AND selected.product_id = history.product_id
+     AND history.purchases > 0
+    GROUP BY
+        selected.user_id,
+        selected.product_id,
+        selected.cart_기준시각,
+        period.전체관측_종료시각
+), eligible_base AS (
+    SELECT *
+    FROM selected_cart_context
+    WHERE cart_기준시각 + INTERVAL 7 DAY <= 전체관측_종료시각
+), hazard_intervals AS (
+    SELECT 0 AS 구간순서, 0 AS 시작일, 1 AS 종료일
+    UNION ALL SELECT 1, 1, 2
+    UNION ALL SELECT 2, 2, 3
+    UNION ALL SELECT 3, 3, 4
+    UNION ALL SELECT 4, 4, 5
+    UNION ALL SELECT 5, 5, 6
+    UNION ALL SELECT 6, 6, 7
+), risk_set AS (
+    SELECT
+        intervals.구간순서,
+        intervals.시작일,
+        intervals.종료일,
+        selected.cart이후_다음purchase시각,
+        selected.cart_기준시각
+    FROM eligible_base selected
+    CROSS JOIN hazard_intervals intervals
+    WHERE (
+          selected.cart이후_다음purchase시각 IS NULL
+          OR selected.cart이후_다음purchase시각
+                > selected.cart_기준시각 + INTERVAL intervals.시작일 DAY
+      )
+)
+SELECT
+    구간순서,
+    CONCAT(시작일 * 24, '-', 종료일 * 24, '시간') AS 경과구간,
+    시작일 * 24 AS 구간시작_시간,
+    종료일 * 24 AS 구간종료_시간,
+    COUNT(*) AS 위험집단_사용자수,
+    SUM(
+        cart이후_다음purchase시각
+            > cart_기준시각 + INTERVAL 시작일 DAY
+        AND cart이후_다음purchase시각
+            <= cart_기준시각 + INTERVAL 종료일 DAY
+    ) AS 구간구매_사용자수,
+    SUM(
+        cart이후_다음purchase시각
+            > cart_기준시각 + INTERVAL 시작일 DAY
+        AND cart이후_다음purchase시각
+            <= cart_기준시각 + INTERVAL 종료일 DAY
+    ) / COUNT(*) * 100 AS 구간구매위험률_pct
+FROM risk_set
+GROUP BY 구간순서, 시작일, 종료일
+ORDER BY 구간순서;
+
 -- name: pj_experiment_baseline | cart+24시간 CRM 실험 적격 사용자와 7일 구매 기준선
 -- 분석 단위는 사용자별 최초 관측 cart 한 건이다. 실험의 user_id 무작위 배정 단위와 맞춘다.
 -- first_cart_at은 세션·상품 안의 최초 cart 시각이므로 운영 시스템의 개별 cart 트리거를 근사한다.

@@ -9,7 +9,18 @@ cache/
 # Tableau 입력용 집계 CSV (export_tableau.py로 재생성, Public에 데이터 임베드됨)
 tableau/*.csv
 
+# 디자인 참고 목업 이미지 (분석 산출물 아님)
+ex*.png
+
+# Notion 페이지 업로드용 차트 사본
+notion_img/
+
 # Jupyter
 .ipynb_checkpoints/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
 .DS_Store
 AGENTS.md
