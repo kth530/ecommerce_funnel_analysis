@@ -1,0 +1,9 @@
+{
+  "cache_contract_version": 1,
+  "dataset": "cosmetics shop events",
+  "dataset_version": "cosmetics-shop-events_2019-10-01_2020-02-29_rows-20692840",
+  "period_start": "2019-10-01",
+  "period_end": "2020-02-29",
+  "raw_event_rows": 20692840,
+  "update_rule": "원본 events 데이터의 기간, 행 수 또는 내용이 바뀌면 dataset_version을 갱신한다."
+}
