@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from experiment_design import calculate_experiment_design
 from query_cache import QueryCache
 
 load_dotenv(ROOT / ".env")
@@ -156,7 +157,17 @@ def main(cache_dir=None, output_dir=None):
     eb = rd("pj_experiment_baseline")
     eligible = int(eb["실험적격_사용자수"].sum())
     buy7 = int(eb["기준점후_7일_동일상품구매_사용자수"].sum())
-    baseline = round(buy7 / eligible * 100, 3)  # 2.536
+    baseline_rate = buy7 / eligible
+
+    daily_eligible_users = (
+        eb.assign(실험적격일=pd.to_datetime(eb["실험적격일"]))
+        .groupby("실험적격일")["실험적격_사용자수"]
+        .sum()
+    )
+    experiment_design = calculate_experiment_design(
+        baseline_rate,
+        daily_eligible_users,
+    )
 
     hazard = rd("pj_cart_purchase_daily_hazard")
     hazard_rates = hazard.set_index("구간순서")["구간구매위험률_pct"]
@@ -166,20 +177,38 @@ def main(cache_dir=None, output_dir=None):
     first_24h_rate = round(float(hazard_rates.loc[0]), 3)  # 15.413
     next_24h_rate = round(float(hazard_rates.loc[1]), 3)  # 0.877
 
-    pd.DataFrame(
-        [
-            {"MDE_상대_pct": 5, "대조군_7일구매율_pct": baseline, "목표구매율_pct": 2.662,
-             "절대MDE_pctp": 0.127, "군별_필요표본_명": 247233, "전체_필요표본_명": 494466,
-             "예상기간_최소_일": 230, "실험적격_사용자수": eligible, "발송_후보시점": "cart+24h",
-             "첫24시간_구매율_pct": first_24h_rate, "24_48시간_구매율_pct": next_24h_rate,
-             "비고": "상대 5% 개선 · 모집 223일+확인 7일"},
-            {"MDE_상대_pct": 10, "대조군_7일구매율_pct": baseline, "목표구매율_pct": 2.789,
-             "절대MDE_pctp": 0.254, "군별_필요표본_명": 63274, "전체_필요표본_명": 126548,
-             "예상기간_최소_일": 64, "실험적격_사용자수": eligible, "발송_후보시점": "cart+24h",
-             "첫24시간_구매율_pct": first_24h_rate, "24_48시간_구매율_pct": next_24h_rate,
-             "비고": "상대 10% 개선(1차 후보) · 모집 57일+확인 7일"},
-        ]
-    ).to_csv(out / "experiment_design.csv", index=False, encoding="utf-8-sig")
+    primary_relative_mde = max(
+        experiment_design.sample_size["상대_MDE"]
+        .str.removeprefix("+")
+        .str.removesuffix("%")
+        .astype(int)
+    )
+    experiment_rows = []
+    for scenario in experiment_design.sample_size.itertuples(index=False):
+        relative_mde_pct = int(scenario.상대_MDE.removeprefix("+").removesuffix("%"))
+        primary_note = "(1차 후보)" if relative_mde_pct == primary_relative_mde else ""
+        experiment_rows.append({
+            "MDE_상대_pct": relative_mde_pct,
+            "대조군_7일구매율_pct": round(scenario.기준구매율_pct, 3),
+            "목표구매율_pct": round(scenario.처리군_목표구매율_pct, 3),
+            "절대MDE_pctp": round(scenario.절대_MDE_pctp, 3),
+            "군별_필요표본_명": scenario.군별_필요사용자수,
+            "전체_필요표본_명": scenario.전체_필요사용자수,
+            "예상기간_최소_일": scenario.예상_모집일수 + experiment_design.tracking_days,
+            "실험적격_사용자수": eligible,
+            "발송_후보시점": "cart+24h",
+            "첫24시간_구매율_pct": first_24h_rate,
+            "24_48시간_구매율_pct": next_24h_rate,
+            "비고": (
+                f"상대 {relative_mde_pct}% 개선{primary_note} · "
+                f"모집 {scenario.예상_모집일수}일+확인 {experiment_design.tracking_days}일"
+            ),
+        })
+    pd.DataFrame(experiment_rows).to_csv(
+        out / "experiment_design.csv",
+        index=False,
+        encoding="utf-8-sig",
+    )
 
     print("생성 완료:", sorted(f.name for f in out.glob("*.csv")))
 
