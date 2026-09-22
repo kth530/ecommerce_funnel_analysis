@@ -46,8 +46,11 @@ ecommerce_funnel_analysis/
 ├── README.md
 ├── docs/           # 지표 정의·대시보드 안내·README 이미지
 ├── notebooks/      # 00-06 분석 노트북
-├── sql/            # 00-06 분석 쿼리 + indexes.sql
+├── sql/            # 01-06 분석 쿼리 + indexes.sql
 ├── tableau/        # Tableau 입력용 집계 데이터 생성 스크립트
+├── query_cache.py  # Notebook 03-06 provenance-aware query cache
+├── experiment_design.py  # Notebook 06·Tableau 공통 실험 설계 계산
+├── cache_context.json    # dataset·cache contract version
 ├── cache/          # parquet 집계 캐시, 저장소 제외
 └── data/           # 원본 월별 CSV, 저장소 제외
 ```
@@ -150,7 +153,7 @@ mart_user_product_session 13,385,787행
         └─ 세션 간 구매 에피소드·개선 시점 분석
 ```
 
-**워크플로**: 분석 SQL은 노트북별 [`sql/`](sql/) 파일의 `-- name:` 블록으로 분리하고, 노트북은 `run()`으로 소량 집계 결과만 받아 시각화한다. 지표와 데이터 처리 방침의 단일 원천은 [`docs/metrics.md`](docs/metrics.md)에 정리했다.
+**워크플로**: 분석 SQL은 노트북별 [`sql/`](sql/) 파일의 `-- name:` 블록으로 분리하고, 노트북은 `run()`으로 소량 집계 결과만 받아 시각화한다. 지표와 데이터 처리 방침의 단일 원천은 [`docs/metrics.md`](docs/metrics.md), cache 재현성 정책은 [`docs/cache_contract.md`](docs/cache_contract.md)에 정리했다.
 
 ---
 

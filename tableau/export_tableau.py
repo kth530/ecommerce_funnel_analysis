@@ -1,6 +1,6 @@
 """Tableau 대시보드용 집계 CSV 생성 스크립트.
 
-- 입력: 검증을 통과한 06 분석 결과 캐시(`cache/pj_*.parquet`). 20M행 `events`를 재조회하지 않는다.
+- 입력: provenance 검증을 통과한 Notebook 06 content-addressed cache. 20M행 `events`를 재조회하지 않는다.
 - 지표 정의는 `docs/metrics.md`·06 노트북과 동일하며 여기서 새로 정의하지 않는다.
 - 표시용 퍼센트·누적·"전체" 행은 이 스크립트에서 미리 계산해 CSV에 넣는다
   (Tableau가 퍼센트를 평균 내어 왜곡하는 것을 방지).
