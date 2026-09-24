@@ -1,4 +1,5 @@
--- 02 전처리 집행·분석 마트 구축·검증
+-- 02 전처리 집행·분석 마트 구축·통합 검증
+-- 생성 DDL은 기존 정의를 보존하고, 기본 실행은 기존 마트의 smoke check만 수행한다.
 -- name: create_mart_session | mart_session 생성 (docs/metrics.md 방침 집행)
 -- 처리 방침의 단일 원천은 docs/metrics.md. 이 스크립트가 그 방침을 집행한다.
 -- 세션 단위 1행. 분석 노트북(03 이후)은 events가 아니라 이 마트만 소비한다.
@@ -95,43 +96,32 @@ DROP TEMPORARY TABLE tmp_session_purchase;
 DROP TEMPORARY TABLE tmp_session_cart;
 DROP TEMPORARY TABLE tmp_mart_session_base;
 
--- name: raw_valid_count | 검증a: raw(events)에서 유효 세션 조건으로 직접 센 세션 수
-SELECT COUNT(*) AS n
-FROM (
+-- name: raw_session_reconciliation | raw 유효 세션·카운트·revenue·strict/inclusive 통합 검증
+WITH valid_sessions AS (
     SELECT user_session
     FROM events
     WHERE user_session IS NOT NULL
     GROUP BY user_session
     HAVING COUNT(DISTINCT user_id) = 1
        AND TIMESTAMPDIFF(SECOND, MIN(event_time), MAX(event_time)) <= 86400
-) v
-
--- name: raw_type_counts | 검증b: raw에서 유효 세션 범위·price>=0 유형별 건수
-SELECT
-    e.event_type,
-    COUNT(*) AS 건수
-FROM events e
-JOIN mart_session m ON e.user_session = m.user_session
-WHERE e.price >= 0
-GROUP BY e.event_type
-ORDER BY e.event_type
-
--- name: raw_revenue | 검증c: raw에서 유효 세션 범위·purchase·price>0 revenue 합
-SELECT SUM(e.price) AS revenue
-FROM events e
-JOIN mart_session m ON e.user_session = m.user_session
-WHERE e.event_type = 'purchase'
-   AND e.price > 0
-
--- name: raw_ordered_counts | 검증d: raw에서 strict·inclusive 순차 도달 독립 계산
-WITH bounds AS (
+), event_totals AS (
+    SELECT
+        SUM(e.event_type = 'view') AS raw_views,
+        SUM(e.event_type = 'cart') AS raw_carts,
+        SUM(e.event_type = 'remove_from_cart') AS raw_removes,
+        SUM(e.event_type = 'purchase') AS raw_purchases,
+        SUM(IF(e.event_type = 'purchase' AND e.price > 0, e.price, 0)) AS raw_revenue
+    FROM events e
+    JOIN valid_sessions v ON e.user_session = v.user_session
+    WHERE e.price >= 0
+), bounds AS (
     SELECT
         e.user_session,
         MIN(CASE WHEN e.event_type = 'view' THEN e.event_time END) AS first_view_at,
         MAX(CASE WHEN e.event_type = 'cart' THEN e.event_time END) AS last_cart_at,
         MAX(CASE WHEN e.event_type = 'purchase' THEN e.event_time END) AS last_purchase_at
     FROM events e
-    JOIN mart_session m ON e.user_session = m.user_session
+    JOIN valid_sessions v ON e.user_session = v.user_session
     WHERE e.price >= 0
       AND e.event_type IN ('view', 'cart', 'purchase')
     GROUP BY e.user_session
@@ -151,6 +141,12 @@ WITH bounds AS (
     GROUP BY b.user_session
 )
 SELECT
+    (SELECT COUNT(*) FROM valid_sessions) AS raw_유효세션수,
+    MAX(t.raw_views) AS raw_views,
+    MAX(t.raw_carts) AS raw_carts,
+    MAX(t.raw_removes) AS raw_removes,
+    MAX(t.raw_purchases) AS raw_purchases,
+    MAX(t.raw_revenue) AS raw_revenue,
     SUM(b.first_view_at IS NOT NULL) AS view_units,
     SUM(b.first_view_at IS NOT NULL
         AND b.last_cart_at > b.first_view_at) AS strict_stage2,
@@ -160,32 +156,20 @@ SELECT
     COALESCE(SUM(s.inclusive_stage3), 0) AS inclusive_stage3
 FROM bounds b
 LEFT JOIN stage3 s ON b.user_session = s.user_session
+CROSS JOIN event_totals t
 
--- name: mart_rowcount | 마트 행수
-SELECT COUNT(*) AS n
-FROM mart_session
-
--- name: mart_type_counts | 마트 유형별 카운트 합 (검증b 대조용)
+-- name: mart_session_reconciliation | mart_session 카운트·revenue·strict 플래그·논리 통합 검증
 SELECT
-    SUM(views) AS view,
-    SUM(carts) AS cart,
-    SUM(removes) AS remove_from_cart,
-    SUM(purchases) AS purchase
-FROM mart_session
-
--- name: mart_revenue | 마트 revenue 합 (검증c 대조용)
-SELECT SUM(revenue) AS revenue
-FROM mart_session
-
--- name: mart_ordered_counts | 마트 strict 순차 플래그 합 (검증d 대조용)
-SELECT
+    COUNT(*) AS 마트_행수,
+    COUNT(*) - COUNT(DISTINCT user_session) AS 기본키_중복,
+    SUM(views) AS 마트_views,
+    SUM(carts) AS 마트_carts,
+    SUM(removes) AS 마트_removes,
+    SUM(purchases) AS 마트_purchases,
+    SUM(revenue) AS 마트_revenue,
     SUM(views > 0) AS view_units,
     SUM(has_cart_after_view) AS strict_stage2,
-    SUM(has_purchase_after_view_cart) AS strict_stage3
-FROM mart_session
-
--- name: mart_ordered_logic | 검증e: 순차 플래그 값·포함 관계
-SELECT
+    SUM(has_purchase_after_view_cart) AS strict_stage3,
     SUM(has_cart_after_view NOT IN (0, 1)) AS invalid_cart_flag,
     SUM(has_purchase_after_view_cart NOT IN (0, 1)) AS invalid_purchase_flag,
     SUM(has_cart_after_view = 1 AND views = 0) AS cart_without_view,
@@ -277,37 +261,14 @@ DROP TEMPORARY TABLE tmp_session_product_purchase;
 DROP TEMPORARY TABLE tmp_session_product_cart;
 DROP TEMPORARY TABLE tmp_mart_session_product_base;
 
--- name: raw_session_product_count | 검증a: raw에서 유효 세션 범위·세션·상품 조합 수
-SELECT COUNT(*) AS n
-FROM (
-    SELECT
-        e.user_session,
-        e.product_id
-    FROM events e
-    JOIN mart_session m ON e.user_session = m.user_session
-    WHERE e.price >= 0
-      AND e.event_type IN ('view', 'cart', 'purchase')
-      AND e.product_id IS NOT NULL
-    GROUP BY e.user_session, e.product_id
-) v
-
--- name: raw_session_product_type_counts | 검증b: raw에서 유효 세션 범위·price>=0 유형별 건수
-SELECT
-    e.event_type,
-    COUNT(*) AS 건수
-FROM events e
-JOIN mart_session m ON e.user_session = m.user_session
-WHERE e.price >= 0
-  AND e.event_type IN ('view', 'cart', 'purchase')
-  AND e.product_id IS NOT NULL
-GROUP BY e.event_type
-ORDER BY e.event_type
-
--- name: raw_session_product_ordered_counts | 검증c: raw에서 동일 상품 strict·inclusive 순차 도달 독립 계산
+-- name: raw_session_product_reconciliation | raw 세션·상품 행수·카운트·strict/inclusive 통합 검증
 WITH bounds AS (
     SELECT
         e.user_session,
         e.product_id,
+        SUM(e.event_type = 'view') AS views,
+        SUM(e.event_type = 'cart') AS carts,
+        SUM(e.event_type = 'purchase') AS purchases,
         MIN(CASE WHEN e.event_type = 'view' THEN e.event_time END) AS first_view_at,
         MAX(CASE WHEN e.event_type = 'cart' THEN e.event_time END) AS last_cart_at,
         MAX(CASE WHEN e.event_type = 'purchase' THEN e.event_time END) AS last_purchase_at
@@ -336,6 +297,10 @@ WITH bounds AS (
     GROUP BY b.user_session, b.product_id
 )
 SELECT
+    COUNT(*) AS raw_행수,
+    SUM(b.views) AS raw_views,
+    SUM(b.carts) AS raw_carts,
+    SUM(b.purchases) AS raw_purchases,
     SUM(b.first_view_at IS NOT NULL) AS view_units,
     SUM(b.first_view_at IS NOT NULL
         AND b.last_cart_at > b.first_view_at) AS strict_stage2,
@@ -348,26 +313,16 @@ LEFT JOIN stage3 s
   ON b.user_session = s.user_session
  AND b.product_id = s.product_id
 
--- name: mart_session_product_count | 마트 세션·상품 행수
-SELECT COUNT(*) AS n
-FROM mart_session_product
-
--- name: mart_session_product_type_counts | 마트 유형별 카운트 합 (검증b 대조용)
+-- name: mart_session_product_reconciliation | mart_session_product 카운트·strict 플래그·논리 통합 검증
 SELECT
-    SUM(views) AS view,
-    SUM(carts) AS cart,
-    SUM(purchases) AS purchase
-FROM mart_session_product
-
--- name: mart_session_product_ordered_counts | 마트 strict 순차 플래그 합 (검증c 대조용)
-SELECT
+    COUNT(*) AS 마트_행수,
+    COUNT(*) - COUNT(DISTINCT user_session, product_id) AS 복합키_중복,
+    SUM(views) AS 마트_views,
+    SUM(carts) AS 마트_carts,
+    SUM(purchases) AS 마트_purchases,
     SUM(views > 0) AS view_units,
     SUM(has_cart_after_view) AS strict_stage2,
-    SUM(has_purchase_after_view_cart) AS strict_stage3
-FROM mart_session_product
-
--- name: mart_session_product_logic | 검증d: 순차 플래그 값·포함 관계
-SELECT
+    SUM(has_purchase_after_view_cart) AS strict_stage3,
     SUM(has_cart_after_view NOT IN (0, 1)) AS invalid_cart_flag,
     SUM(has_purchase_after_view_cart NOT IN (0, 1)) AS invalid_purchase_flag,
     SUM(has_cart_after_view = 1 AND views = 0) AS cart_without_view,
@@ -375,18 +330,10 @@ SELECT
     SUM(has_purchase_after_view_cart = 1 AND purchases = 0) AS purchase_without_event
 FROM mart_session_product
 
--- name: mart_session_product_key | 검증e: 복합 기본키 구성
-SELECT
-    COUNT(*) AS pk_columns
-FROM information_schema.statistics
-WHERE table_schema = DATABASE()
-  AND table_name = 'mart_session_product'
-  AND index_name = 'PRIMARY'
-
--- name: create_mart_user_product_session | 구매 여정용 세션·상품 마트 생성 (docs/metrics.md 방침 집행)
+-- name: create_mart_user_product_session | 대표 첫 구매용 세션·상품 마트 생성 (docs/metrics.md 방침 집행)
 -- 처리 방침의 단일 원천은 docs/metrics.md. 이 스크립트가 그 방침을 집행한다.
 -- 분석 단위는 유효 세션·상품(user_session × product_id) 1행이다.
--- view·cart·remove·purchase의 최초·최종 시각을 보존해 06에서 raw를 다시 조회하지 않는다.
+-- view·cart·remove·purchase의 최초·최종 시각을 보존해 05에서 raw를 다시 조회하지 않는다.
 -- 구매 전 행동은 strict(event_time < first_purchase_at) 기준이며 동일 시각은 제외한다.
 DROP TEMPORARY TABLE IF EXISTS tmp_user_product_session_base;
 DROP TEMPORARY TABLE IF EXISTS tmp_user_product_before_purchase;
@@ -510,7 +457,7 @@ CREATE INDEX idx_mups_first_purchase
 DROP TEMPORARY TABLE tmp_user_product_before_purchase;
 DROP TEMPORARY TABLE tmp_user_product_session_base;
 
--- name: raw_user_product_session_reconciliation | 검증a: raw 집계와 여정 마트의 행수·카운트·시각 대조
+-- name: raw_user_product_session_reconciliation | raw 집계와 대표 첫 구매 마트의 행수·카운트·시각 대조
 WITH raw_grouped AS (
     SELECT
         e.user_session,
@@ -561,7 +508,7 @@ LEFT JOIN mart_user_product_session j
   ON r.user_session = j.user_session
  AND r.product_id = j.product_id;
 
--- name: raw_user_product_before_purchase_reconciliation | 검증b: 최초 구매 전 행동 시각 raw 대조
+-- name: raw_user_product_before_purchase_reconciliation | 최초 구매 전 행동 시각 raw 대조
 WITH raw_before_purchase AS (
     SELECT
         j.user_session,
@@ -600,26 +547,16 @@ JOIN mart_user_product_session j
   ON r.user_session = j.user_session
  AND r.product_id = j.product_id;
 
--- name: mart_user_product_session_summary | 여정 마트 행수·카운트·revenue 합
+-- name: mart_user_product_session_reconciliation | 대표 첫 구매 마트 카운트·시각·플래그 논리 통합 검증
 SELECT
     COUNT(*) AS 마트_행수,
+    COUNT(*) - COUNT(DISTINCT user_session, product_id) AS 복합키_중복,
     SUM(purchases > 0) AS 마트_구매행수,
     SUM(views) AS 마트_views,
     SUM(carts) AS 마트_carts,
     SUM(removes) AS 마트_removes,
     SUM(purchases) AS 마트_purchases,
-    SUM(revenue) AS 마트_revenue
-FROM mart_user_product_session;
-
--- name: mart_user_product_session_flags | 검증c: 기존 동일 상품 순차 플래그와 대조
-SELECT
-    (SELECT SUM(has_cart_after_view) FROM mart_user_product_session) AS 여정마트_stage2,
-    (SELECT SUM(has_cart_after_view) FROM mart_session_product) AS 기존마트_stage2,
-    (SELECT SUM(has_purchase_after_view_cart) FROM mart_user_product_session) AS 여정마트_stage3,
-    (SELECT SUM(has_purchase_after_view_cart) FROM mart_session_product) AS 기존마트_stage3;
-
--- name: mart_user_product_session_logic | 검증d: 시각·카운트·플래그 논리 관계
-SELECT
+    SUM(revenue) AS 마트_revenue,
     SUM((views = 0 AND (first_view_at IS NOT NULL OR last_view_at IS NOT NULL))
         OR (views > 0 AND (first_view_at IS NULL OR last_view_at IS NULL))) AS view_시각오류,
     SUM((carts = 0 AND (first_cart_at IS NOT NULL OR last_cart_at IS NOT NULL))
@@ -641,14 +578,93 @@ SELECT
         AND (first_view_at IS NULL
              OR last_cart_before_first_purchase_at IS NULL
              OR first_purchase_at IS NULL)) AS 최초구매경로_오류
-FROM mart_user_product_session;
+FROM mart_user_product_session
 
--- name: mart_user_product_session_key | 검증e: 복합 기본키·분석 인덱스 구성
+-- name: mart_inventory_smoke | 세 마트의 정확한 행 수와 기본 논리 위반 저비용 확인
 SELECT
-    SUM(index_name = 'PRIMARY') AS 기본키_열수,
-    SUM(index_name = 'idx_mups_user_product_start') AS 사용자상품시각_인덱스열수,
-    SUM(index_name = 'idx_mups_product_start') AS 상품시각_인덱스열수,
-    SUM(index_name = 'idx_mups_first_purchase') AS 구매시각_인덱스열수
+    'mart_session' AS table_name,
+    COUNT(*) AS row_count,
+    SUM(CASE WHEN
+        user_session IS NULL
+        OR user_id IS NULL
+        OR session_start > session_end
+        OR duration_sec < 0
+        OR total_events < 0
+        OR views < 0 OR carts < 0 OR removes < 0 OR purchases < 0
+        OR has_cart_after_view NOT IN (0, 1)
+        OR has_purchase_after_view_cart NOT IN (0, 1)
+        OR (has_cart_after_view = 1 AND views = 0)
+        OR (has_purchase_after_view_cart = 1 AND has_cart_after_view = 0)
+        OR (has_purchase_after_view_cart = 1 AND purchases = 0)
+        THEN 1 ELSE 0 END) AS basic_logic_violations
+FROM mart_session
+UNION ALL
+SELECT
+    'mart_session_product' AS table_name,
+    COUNT(*) AS row_count,
+    SUM(CASE WHEN
+        user_session IS NULL
+        OR product_id IS NULL
+        OR views < 0 OR carts < 0 OR purchases < 0
+        OR has_cart_after_view NOT IN (0, 1)
+        OR has_purchase_after_view_cart NOT IN (0, 1)
+        OR (has_cart_after_view = 1 AND views = 0)
+        OR (has_purchase_after_view_cart = 1 AND has_cart_after_view = 0)
+        OR (has_purchase_after_view_cart = 1 AND purchases = 0)
+        THEN 1 ELSE 0 END) AS basic_logic_violations
+FROM mart_session_product
+UNION ALL
+SELECT
+    'mart_user_product_session' AS table_name,
+    COUNT(*) AS row_count,
+    SUM(CASE WHEN
+        user_session IS NULL OR user_id IS NULL OR product_id IS NULL
+        OR session_start > session_end
+        OR views < 0 OR carts < 0 OR removes < 0 OR purchases < 0
+        OR (views = 0 AND (first_view_at IS NOT NULL OR last_view_at IS NOT NULL))
+        OR (views > 0 AND (first_view_at IS NULL OR last_view_at IS NULL))
+        OR (carts = 0 AND (first_cart_at IS NOT NULL OR last_cart_at IS NOT NULL))
+        OR (carts > 0 AND (first_cart_at IS NULL OR last_cart_at IS NULL))
+        OR (purchases = 0 AND (first_purchase_at IS NOT NULL OR last_purchase_at IS NOT NULL))
+        OR (purchases > 0 AND (first_purchase_at IS NULL OR last_purchase_at IS NULL))
+        OR first_view_at > last_view_at
+        OR first_cart_at > last_cart_at
+        OR first_purchase_at > last_purchase_at
+        OR last_cart_before_first_purchase_at >= first_purchase_at
+        OR has_cart_after_view NOT IN (0, 1)
+        OR has_purchase_after_view_cart NOT IN (0, 1)
+        OR has_view_cart_before_first_purchase NOT IN (0, 1)
+        OR (has_purchase_after_view_cart = 1 AND has_cart_after_view = 0)
+        THEN 1 ELSE 0 END) AS basic_logic_violations
+FROM mart_user_product_session
+ORDER BY table_name
+
+-- name: mart_schema_contract | 세 마트의 컬럼·PK·인덱스 계약 확인
+SELECT
+    'COLUMN' AS contract_type,
+    table_name AS mart_table,
+    column_name AS object_name,
+    ordinal_position AS contract_position,
+    column_name AS contract_column
+FROM information_schema.columns
+WHERE table_schema = DATABASE()
+  AND table_name IN (
+      'mart_session',
+      'mart_session_product',
+      'mart_user_product_session'
+  )
+UNION ALL
+SELECT
+    'INDEX' AS contract_type,
+    table_name AS mart_table,
+    index_name AS object_name,
+    seq_in_index AS contract_position,
+    column_name AS contract_column
 FROM information_schema.statistics
 WHERE table_schema = DATABASE()
-  AND table_name = 'mart_user_product_session';
+  AND table_name IN (
+      'mart_session',
+      'mart_session_product',
+      'mart_user_product_session'
+  )
+ORDER BY mart_table, contract_type, object_name, contract_position
