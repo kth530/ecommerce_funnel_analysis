@@ -53,7 +53,10 @@ def _load(cache: QueryCache):
     experiment_daily = cache.read_cached(
         "pj_experiment_baseline", params=correction_params
     )
-    return purchase_cohort, mart_paths, raw_paths, cart_rates, experiment_daily
+    cluster_dist = cache.read_cached(
+        "pj_experiment_user_cluster", params=correction_params
+    )
+    return purchase_cohort, mart_paths, raw_paths, cart_rates, experiment_daily, cluster_dist
 
 
 def build_funnel_summary(path_summary, eligible_n, purchase_n) -> pd.DataFrame:
@@ -95,14 +98,14 @@ def build_purchase_path(path_summary) -> pd.DataFrame:
     return frame.sort_values("구매_세션상품수", ascending=False, ignore_index=True)
 
 
-def build_experiment_design(experiment_daily, cart_rates) -> pd.DataFrame:
+def build_experiment_design(experiment_daily, cart_rates, cluster_dist) -> pd.DataFrame:
     """워크북 experiment_design 계약(12열). MDE 5%·10% 두 행."""
-    eligible_n = int(experiment_daily["실험적격_사용자수"].sum())
-    purchase_7day_n = int(experiment_daily["기준점후_7일_동일상품구매_사용자수"].sum())
+    eligible_n = int(experiment_daily["실험적격_사용자상품수"].sum())
+    purchase_7day_n = int(experiment_daily["기준점후_7일_동일상품구매_사용자상품수"].sum())
     baseline_rate = purchase_7day_n / eligible_n
     daily = (
         experiment_daily.assign(실험적격일=pd.to_datetime(experiment_daily["실험적격일"]))
-        .groupby("실험적격일")["실험적격_사용자수"]
+        .groupby("실험적격일")["실험적격_사용자상품수"]
         .sum()
     )
     design = calculate_experiment_design(
@@ -122,28 +125,41 @@ def build_experiment_design(experiment_daily, cart_rates) -> pd.DataFrame:
         raise ValueError("0-24시간·24-48시간 구간이 모두 필요합니다.")
     first_24h, next_24h = round(float(rates.loc[0]), 3), round(float(rates.loc[1]), 3)
 
-    primary = max(
-        int(s.removeprefix("+").removesuffix("%"))
-        for s in design.sample_size["상대_MDE"]
-    )
+    # 대표 설계는 export_tableau의 RELATIVE_MDE와 같은 시나리오다.
+    primary = int(round(ex.RELATIVE_MDE * 100))
+    # 지표·표본은 (사용자, 상품) 쌍이지만 배정·발송은 사용자 단위다. 워크북 카드가
+    # 사람 수를 보여주도록 쌍을 사용자 수로 환산해 `..._명` 열에 넣는다. 같은 사용자가
+    # 다른 날 다시 적격이 될 수 있어 일자 기준 비율을 쓴다(사용자 수를 크게 잡는 쪽).
+    eligible_user_days = int(experiment_daily["실험적격_사용자수"].sum())
+    # 표본·기간은 05 노트북과 같은 설계효과를 반영한다.
+    _icc, _adjusted, design_effect = ex.cluster_design_effect(cluster_dist)
+
+    def to_users(pairs: int) -> int:
+        return -(-int(pairs) * eligible_user_days // eligible_n)
+
     rows = []
     for s in design.sample_size.itertuples(index=False):
         mde = int(s.상대_MDE.removeprefix("+").removesuffix("%"))
+        group_pairs = ex.inflate(s.군별_필요표본수, design_effect)
+        total_pairs = ex.inflate(s.전체_필요표본수, design_effect)
+        total_days = ex.inflate(s.예상_모집일수, design_effect) + design.tracking_days
         rows.append({
             "MDE_상대_pct": mde,
             "대조군_7일구매율_pct": round(s.기준구매율_pct, 3),
             "목표구매율_pct": round(s.처리군_목표구매율_pct, 3),
             "절대MDE_pctp": round(s.절대_MDE_pctp, 3),
-            "군별_필요표본_명": int(s.군별_필요사용자수),
-            "전체_필요표본_명": int(s.전체_필요사용자수),
-            "예상기간_최소_일": int(s.예상_모집일수) + design.tracking_days,
+            "군별_필요표본_명": to_users(group_pairs),
+            "전체_필요표본_명": to_users(total_pairs),
+            "예상기간_최소_일": total_days,
+            # 워크북 계약상 이름은 유지하되 값은 적격 (사용자, 상품) 쌍 수다.
             "실험적격_사용자수": eligible_n,
             "발송_후보시점": "cart+24h",
             "첫24시간_구매율_pct": first_24h,
             "24_48시간_구매율_pct": next_24h,
             "비고": (
                 f"상대 {mde}% 개선{'(1차 후보)' if mde == primary else ''} · "
-                f"모집 {int(s.예상_모집일수)}일+확인 {design.tracking_days}일"
+                f"{total_pairs:,}쌍 = 약 {to_users(total_pairs):,}명 · "
+                f"설계효과 {design_effect:.2f}배 반영 · 총 {total_days}일"
             ),
         })
     return pd.DataFrame(rows)
@@ -157,8 +173,8 @@ def build_cart_cumulative(cart_rates) -> pd.DataFrame:
     상승 폭이 곡선에 드러나게 한다.
     """
     d = cart_rates.sort_values("구간순서").copy()
-    base = int(d["구간시작_미구매_사용자수"].iloc[0])
-    cumulative = d["다음24시간_구매_사용자수"].fillna(0).cumsum().astype("int64")
+    base = int(d["구간시작_미구매_사용자상품수"].iloc[0])
+    cumulative = d["다음24시간_구매_사용자상품수"].fillna(0).cumsum().astype("int64")
     rows = [{
         "구간순서": -1, "경과시간": "0시간", "경과시간_시간": 0,
         "누적_구매_사용자수": 0, "누적_구매율_pct": 0.0,
@@ -182,13 +198,15 @@ def main(output_dir: str | None = None) -> None:
         sql_file=ROOT / "sql" / "05_purchase_journey_analysis.sql",
         upstream_sql_files=(ROOT / "sql" / "02_preprocessing_mart.sql",),
     )
-    cohort, mart_paths, raw_paths, cart_rates, experiment_daily = _load(cache)
+    cohort, mart_paths, raw_paths, cart_rates, experiment_daily, cluster_dist = _load(cache)
     path_summary, eligible_n, purchase_n = ex._path_summary(cohort, mart_paths, raw_paths)
 
     written = {
         "funnel_summary.csv": build_funnel_summary(path_summary, eligible_n, purchase_n),
         "purchase_path.csv": build_purchase_path(path_summary),
-        "experiment_design.csv": build_experiment_design(experiment_daily, cart_rates),
+        "experiment_design.csv": build_experiment_design(
+            experiment_daily, cart_rates, cluster_dist
+        ),
         "cart_cumulative.csv": build_cart_cumulative(cart_rates),
     }
     for name, frame in written.items():

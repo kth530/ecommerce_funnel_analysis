@@ -35,7 +35,7 @@ CART_INTERVAL_HOURS = 24
 TRACKING_DAYS = 7
 ALPHA = 0.05
 POWER = 0.80
-RELATIVE_MDE = 0.10
+RELATIVE_MDE = 0.05
 
 # 05 노트북의 PATH_LABELS와 문자열이 같아야 한다. 한쪽만 바꾸면 노트북과 대시보드의 경로명이 갈린다.
 PATH_LABELS = {
@@ -264,42 +264,81 @@ def _cart_purchase_rate(cart_rates: pd.DataFrame) -> pd.DataFrame:
     frame = cart_rates[[
         "구간순서",
         "경과구간",
-        "구간시작_미구매_사용자수",
-        "다음24시간_구매_사용자수",
+        "구간시작_미구매_사용자상품수",
+        "다음24시간_구매_사용자상품수",
     ]].copy()
-    frame["구간시작_미구매_사용자수"] = (
-        frame["구간시작_미구매_사용자수"].astype("int64")
+    frame["구간시작_미구매_사용자상품수"] = (
+        frame["구간시작_미구매_사용자상품수"].astype("int64")
     )
-    frame["다음24시간_구매_사용자수"] = (
-        frame["다음24시간_구매_사용자수"].astype("int64")
+    frame["다음24시간_구매_사용자상품수"] = (
+        frame["다음24시간_구매_사용자상품수"].astype("int64")
     )
     frame["구간별다음24시간구매율_pct"] = (
-        frame["다음24시간_구매_사용자수"]
-        / frame["구간시작_미구매_사용자수"]
+        frame["다음24시간_구매_사용자상품수"]
+        / frame["구간시작_미구매_사용자상품수"]
         * 100
     ).round(3)
     return frame.sort_values("구간순서").reset_index(drop=True)
 
 
+def cluster_design_effect(cluster_dist: pd.DataFrame) -> tuple[float, float, float]:
+    """실험 적격 조합의 사용자별 묶임 분포에서 (ICC, 보정 군집크기, 설계효과)를 구한다.
+
+    한 사용자의 여러 (사용자, 상품) 조합은 서로 독립이 아니다. 결제가 장바구니
+    단위로 일어나 같은 사용자의 결과가 함께 움직이기 때문이다. 유의성은 보지 않고
+    추정값을 그대로 표본 산정에 반영한다. 05 노트북 §5와 같은 계산이다.
+    """
+    users = cluster_dist["사용자수"].astype("int64")
+    size = cluster_dist["보유_사용자상품수"].astype("int64")
+    # 모든 행의 다음 purchase가 없으면 SQL SUM()이 NULL을 준다. 구매 0건을 뜻한다.
+    buys = cluster_dist["구매_사용자상품수"].fillna(0).astype("int64")
+    if not (buys <= size).all():
+        raise ValueError("구매 조합 수가 보유 조합 수를 넘습니다.")
+
+    user_n = int(users.sum())
+    pair_n = int((users * size).sum())
+    grand = float((users * buys).sum() / pair_n)
+    rate = buys / size
+    msb = float((users * size * (rate - grand) ** 2).sum()) / (user_n - 1)
+    msw = float((users * size * rate * (1 - rate)).sum()) / (pair_n - user_n)
+    adjusted = (pair_n - float((users * size ** 2).sum()) / pair_n) / (user_n - 1)
+    icc = max(0.0, (msb - msw) / (msb + (adjusted - 1) * msw))
+    return icc, adjusted, 1 + (adjusted - 1) * icc
+
+
+def inflate(value: float, design_effect: float) -> int:
+    """설계효과를 곱해 올림한다. 표본·기간에 같은 배수를 적용한다."""
+    return -(-int(value) * int(round(design_effect * 1000)) // 1000)
+
+
 def _experiment_design(
     experiment_daily: pd.DataFrame,
     cart_rates: pd.DataFrame,
+    cluster_dist: pd.DataFrame,
 ) -> pd.DataFrame:
     daily = experiment_daily.copy()
     daily["실험적격일"] = pd.to_datetime(daily["실험적격일"])
-    eligible_n = int(daily["실험적격_사용자수"].sum())
-    purchase_7day_n = int(daily["기준점후_7일_동일상품구매_사용자수"].sum())
+    # 분석 단위는 (사용자, 상품) 쌍이다. 같은 캐시의 실험적격_사용자수는
+    # 일별 distinct 사용자 수이므로 표본 산정에 쓰지 않는다.
+    eligible_n = int(daily["실험적격_사용자상품수"].sum())
+    purchase_7day_n = int(daily["기준점후_7일_동일상품구매_사용자상품수"].sum())
     baseline_rate = purchase_7day_n / eligible_n
-    daily_eligible_users = daily.set_index("실험적격일")["실험적격_사용자수"]
+    daily_eligible_pairs = daily.set_index("실험적격일")["실험적격_사용자상품수"]
     design = calculate_experiment_design(
         baseline_rate=baseline_rate,
-        daily_eligible_users=daily_eligible_users,
+        daily_eligible_users=daily_eligible_pairs,
         relative_mdes=(RELATIVE_MDE,),
         alpha=ALPHA,
         power=POWER,
         tracking_days=TRACKING_DAYS,
     )
     design_row = design.sample_size.iloc[0]
+    icc, _adjusted, design_effect = cluster_design_effect(cluster_dist)
+    required_pairs = inflate(design_row["전체_필요표본수"], design_effect)
+    total_days = inflate(design_row["예상_모집일수"], design_effect) + TRACKING_DAYS
+    conservative_days = total_days + (
+        int(design_row["보수적_7일추적포함_일수"]) - int(design_row["7일추적포함_최소일수"])
+    )
     interval_rates = cart_rates.set_index("구간순서")[
         "구간별다음24시간구매율_pct"
     ]
@@ -307,14 +346,16 @@ def _experiment_design(
         raise ValueError("cart 구매율 캐시에 0~24시간과 24~48시간 구간이 필요합니다.")
 
     return pd.DataFrame([{
-        "실험적격_사용자수": eligible_n,
+        "실험적격_사용자상품수": eligible_n,
         "7일_동일상품구매_사용자수": purchase_7day_n,
         "기준구매율_pct": round(baseline_rate * 100, 3),
         "상대MDE_pct": round(RELATIVE_MDE * 100, 3),
         "목표구매율_pct": round(float(design_row["처리군_목표구매율_pct"]), 3),
-        "전체필요표본_명": int(design_row["전체_필요사용자수"]),
-        "평균유입기준기간_일": int(design_row["7일추적포함_최소일수"]),
-        "보수적기간_일": int(design_row["보수적_7일추적포함_일수"]),
+        "급내상관": round(icc, 4),
+        "설계효과_배": round(design_effect, 3),
+        "전체필요표본_쌍": required_pairs,
+        "평균유입기준기간_일": total_days,
+        "보수적기간_일": conservative_days,
         "유의수준": ALPHA,
         "검정력": POWER,
         "검정방식": "양측 검정",
@@ -344,22 +385,22 @@ def _validate_regression(
         raise ValueError("30일 대표 첫 구매율 회귀 검산 실패")
 
     first_two = cart_rates.set_index("구간순서").loc[[0, 1]]
-    if first_two["구간시작_미구매_사용자수"].tolist() != [380_363, 321_738]:
+    if first_two["구간시작_미구매_사용자상품수"].tolist() != [4_082_470, 3_305_169]:
         raise ValueError("cart 구매율 분모 회귀 검산 실패")
-    if first_two["다음24시간_구매_사용자수"].tolist() != [58_625, 2_821]:
+    if first_two["다음24시간_구매_사용자상품수"].tolist() != [777_301, 53_646]:
         raise ValueError("cart 구매율 분자 회귀 검산 실패")
-    if first_two["구간별다음24시간구매율_pct"].tolist() != [15.413, 0.877]:
+    if first_two["구간별다음24시간구매율_pct"].tolist() != [19.040, 1.623]:
         raise ValueError("cart 구매율 회귀 검산 실패")
 
     row = experiment.iloc[0]
     expected_experiment = {
-        "실험적격_사용자수": 320_360,
-        "7일_동일상품구매_사용자수": 8_123,
-        "기준구매율_pct": 2.536,
-        "목표구매율_pct": 2.789,
-        "전체필요표본_명": 126_548,
-        "평균유입기준기간_일": 64,
-        "보수적기간_일": 84,
+        "실험적격_사용자상품수": 3_287_385,
+        "7일_동일상품구매_사용자수": 154_517,
+        "기준구매율_pct": 4.700,
+        "목표구매율_pct": 4.935,
+        "전체필요표본_쌍": 763_479,
+        "평균유입기준기간_일": 43,
+        "보수적기간_일": 44,
     }
     for column, expected in expected_experiment.items():
         if row[column] != expected:
@@ -436,7 +477,11 @@ def main(cache_dir: str | None = None, output_dir: str | None = None) -> None:
         "30일적격대비비율_pct",
     ]].round(3)
     cart_rates = _cart_purchase_rate(cart_rate_cache)
-    experiment = _experiment_design(experiment_daily, cart_rates)
+    cluster_dist = cache.read_cached(
+        "pj_experiment_user_cluster",
+        params=correction_params,
+    )
+    experiment = _experiment_design(experiment_daily, cart_rates, cluster_dist)
 
     _validate_regression(funnel, paths, cart_rates, experiment)
 

@@ -405,29 +405,20 @@ SELECT
 FROM action_flags
 ORDER BY user_id, product_id, boundary_type;
 
--- name: pj_cart_purchase_boundaries | 최초 cart가 다중 purchase 최초·최종 시각 사이인 사용자
--- 분석 단위는 사용자별 최초 관측 cart 한 건이며, 동률이면 product_id가 작은 상품을 선택한다.
--- 두 후속 지표의 공통 기반인 cart 이후 7일 관측 가능 사용자만 raw 후보로 남긴다.
+-- name: pj_cart_purchase_boundaries | 최초 cart가 다중 purchase 최초·최종 시각 사이인 사용자·상품
+-- 분석 단위는 (사용자, 상품)별 최초 관측 cart 한 건이다. 30일 여정 분석과 같은 단위를 쓴다.
+-- 두 후속 지표의 공통 기반인 cart 이후 7일 관측 가능 사용자·상품만 raw 후보로 남긴다.
 WITH observation_period AS (
     SELECT MAX(session_end) AS observation_end_at
     FROM mart_user_product_session
-), first_cart_time_per_user AS (
+), first_cart_per_user_product AS (
     SELECT
         user_id,
+        product_id,
         MIN(first_cart_at) AS cart_anchor_at
     FROM mart_user_product_session
     WHERE first_cart_at IS NOT NULL
-    GROUP BY user_id
-), first_cart_per_user AS (
-    SELECT
-        first_cart.user_id,
-        MIN(cart_row.product_id) AS product_id,
-        first_cart.cart_anchor_at
-    FROM first_cart_time_per_user first_cart
-    JOIN mart_user_product_session cart_row
-      ON first_cart.user_id = cart_row.user_id
-     AND first_cart.cart_anchor_at = cart_row.first_cart_at
-    GROUP BY first_cart.user_id, first_cart.cart_anchor_at
+    GROUP BY user_id, product_id
 ), boundary_flags AS (
     SELECT
         selected.user_id,
@@ -438,7 +429,7 @@ WITH observation_period AS (
             AND history.first_purchase_at <= selected.cart_anchor_at
             AND history.last_purchase_at > selected.cart_anchor_at
         ) AS purchase_boundary_flag
-    FROM first_cart_per_user selected
+    FROM first_cart_per_user_product selected
     CROSS JOIN observation_period period
     LEFT JOIN mart_user_product_session history
       ON selected.user_id = history.user_id
@@ -534,23 +525,14 @@ WITH raw_corrections AS (
 ), observation_period AS (
     SELECT MAX(session_end) AS observation_end_at
     FROM mart_user_product_session
-), first_cart_time_per_user AS (
+), first_cart_per_user_product AS (
     SELECT
         user_id,
+        product_id,
         MIN(first_cart_at) AS cart_anchor_at
     FROM mart_user_product_session
     WHERE first_cart_at IS NOT NULL
-    GROUP BY user_id
-), first_cart_per_user AS (
-    SELECT
-        first_cart.user_id,
-        MIN(cart_row.product_id) AS product_id,
-        first_cart.cart_anchor_at
-    FROM first_cart_time_per_user first_cart
-    JOIN mart_user_product_session cart_row
-      ON first_cart.user_id = cart_row.user_id
-     AND first_cart.cart_anchor_at = cart_row.first_cart_at
-    GROUP BY first_cart.user_id, first_cart.cart_anchor_at
+    GROUP BY user_id, product_id
 ), mart_context AS (
     SELECT
         selected.user_id,
@@ -566,7 +548,7 @@ WITH raw_corrections AS (
             AND history.first_purchase_at <= selected.cart_anchor_at
             AND history.last_purchase_at > selected.cart_anchor_at
         ) AS purchase_boundary_flag
-    FROM first_cart_per_user selected
+    FROM first_cart_per_user_product selected
     CROSS JOIN observation_period period
     LEFT JOIN mart_user_product_session history
       ON selected.user_id = history.user_id
@@ -627,16 +609,16 @@ SELECT
     CONCAT(start_day * 24, '-', end_day * 24, '시간') AS 경과구간,
     start_day * 24 AS 구간시작_시간,
     end_day * 24 AS 구간종료_시간,
-    COUNT(*) AS 구간시작_미구매_사용자수,
+    COUNT(*) AS 구간시작_미구매_사용자상품수,
     SUM(
         next_purchase_at > cart_anchor_at + INTERVAL start_day DAY
         AND next_purchase_at <= cart_anchor_at + INTERVAL end_day DAY
-    ) AS 다음24시간_구매_사용자수
+    ) AS 다음24시간_구매_사용자상품수
 FROM interval_populations
 GROUP BY interval_order, start_day, end_day
 ORDER BY interval_order;
 
--- name: pj_experiment_baseline | cart+24시간 실험 적격 사용자와 7일 구매 기준선
+-- name: pj_experiment_baseline | cart+24시간 실험 적격 사용자·상품과 7일 구매 기준선
 -- cart 다중 purchase 경계는 pj_cart_boundary_raw_next_purchase 결과로 교체한다.
 WITH raw_corrections AS (
     SELECT
@@ -657,24 +639,15 @@ WITH raw_corrections AS (
 ), observation_period AS (
     SELECT MAX(session_end) AS observation_end_at
     FROM mart_user_product_session
-), first_cart_time_per_user AS (
+), first_cart_per_user_product AS (
     SELECT
         user_id,
-        MIN(first_cart_at) AS cart_anchor_at
+        product_id,
+        MIN(first_cart_at) AS cart_anchor_at,
+        MIN(first_cart_at) + INTERVAL 1 DAY AS eligibility_at
     FROM mart_user_product_session
     WHERE first_cart_at IS NOT NULL
-    GROUP BY user_id
-), first_cart_per_user AS (
-    SELECT
-        first_cart.user_id,
-        MIN(cart_row.product_id) AS product_id,
-        first_cart.cart_anchor_at,
-        first_cart.cart_anchor_at + INTERVAL 1 DAY AS eligibility_at
-    FROM first_cart_time_per_user first_cart
-    JOIN mart_user_product_session cart_row
-      ON first_cart.user_id = cart_row.user_id
-     AND first_cart.cart_anchor_at = cart_row.first_cart_at
-    GROUP BY first_cart.user_id, first_cart.cart_anchor_at
+    GROUP BY user_id, product_id
 ), mart_context AS (
     SELECT
         selected.user_id,
@@ -691,7 +664,7 @@ WITH raw_corrections AS (
             AND history.first_purchase_at <= selected.cart_anchor_at
             AND history.last_purchase_at > selected.cart_anchor_at
         ) AS purchase_boundary_flag
-    FROM first_cart_per_user selected
+    FROM first_cart_per_user_product selected
     CROSS JOIN observation_period period
     LEFT JOIN mart_user_product_session history
       ON selected.user_id = history.user_id
@@ -735,19 +708,129 @@ WITH raw_corrections AS (
 )
 SELECT
     DATE(eligibility_at) AS 실험적격일,
-    COUNT(*) AS 실험적격_사용자수,
+    COUNT(*) AS 실험적격_사용자상품수,
+    -- 배정·발송은 사용자 단위이므로, 필요 표본(쌍)을 사용자 수로 환산할 때 쓴다.
+    COUNT(DISTINCT user_id) AS 실험적격_사용자수,
     SUM(
         next_purchase_at > eligibility_at
         AND next_purchase_at <= eligibility_at + INTERVAL 7 DAY
-    ) AS 기준점후_7일_동일상품구매_사용자수,
+    ) AS 기준점후_7일_동일상품구매_사용자상품수,
     SUM(
         eligibility_at + INTERVAL 30 DAY <= observation_end_at
-    ) AS 기준점후_30일_판정가능_사용자수,
+    ) AS 기준점후_30일_판정가능_사용자상품수,
     SUM(
         eligibility_at + INTERVAL 30 DAY <= observation_end_at
         AND next_purchase_at > eligibility_at
         AND next_purchase_at <= eligibility_at + INTERVAL 30 DAY
-    ) AS 기준점후_30일_동일상품구매_사용자수
+    ) AS 기준점후_30일_동일상품구매_사용자상품수
 FROM eligible_users
 GROUP BY DATE(eligibility_at)
 ORDER BY 실험적격일;
+
+-- name: pj_experiment_user_cluster | 실험 적격 조합의 사용자별 묶임 분포
+-- 적격 집합 정의는 pj_experiment_baseline과 완전히 같고 마지막 집계만 다르다.
+-- 사용자 한 명이 몇 개의 적격 조합을 갖고 그중 몇 개를 구매했는지의 분포를 돌려준다.
+-- 이 분포만으로 급내상관(ICC)과 설계효과를 계산할 수 있어 사용자 행을 모두 내리지 않는다.
+WITH raw_corrections AS (
+    SELECT
+        correction.user_id,
+        correction.product_id,
+        correction.cart_anchor_at,
+        correction.next_purchase_at
+    FROM JSON_TABLE(
+        :cart_boundary_corrections_json,
+        '$[*]' COLUMNS (
+            user_id BIGINT PATH '$.user_id',
+            product_id BIGINT PATH '$.product_id',
+            cart_anchor_at DATETIME PATH '$.cart_anchor_at',
+            next_purchase_at DATETIME PATH '$.next_purchase_at'
+                NULL ON EMPTY NULL ON ERROR
+        )
+    ) correction
+), observation_period AS (
+    SELECT MAX(session_end) AS observation_end_at
+    FROM mart_user_product_session
+), first_cart_per_user_product AS (
+    SELECT
+        user_id,
+        product_id,
+        MIN(first_cart_at) AS cart_anchor_at,
+        MIN(first_cart_at) + INTERVAL 1 DAY AS eligibility_at
+    FROM mart_user_product_session
+    WHERE first_cart_at IS NOT NULL
+    GROUP BY user_id, product_id
+), mart_context AS (
+    SELECT
+        selected.user_id,
+        selected.product_id,
+        selected.cart_anchor_at,
+        selected.eligibility_at,
+        period.observation_end_at,
+        MIN(CASE
+            WHEN history.first_purchase_at > selected.cart_anchor_at
+                THEN history.first_purchase_at
+        END) AS mart_next_purchase_at,
+        MAX(
+            history.purchases > 1
+            AND history.first_purchase_at <= selected.cart_anchor_at
+            AND history.last_purchase_at > selected.cart_anchor_at
+        ) AS purchase_boundary_flag
+    FROM first_cart_per_user_product selected
+    CROSS JOIN observation_period period
+    LEFT JOIN mart_user_product_session history
+      ON selected.user_id = history.user_id
+     AND selected.product_id = history.product_id
+     AND history.purchases > 0
+    GROUP BY
+        selected.user_id,
+        selected.product_id,
+        selected.cart_anchor_at,
+        selected.eligibility_at,
+        period.observation_end_at
+), corrected_context AS (
+    SELECT
+        mart.user_id,
+        mart.product_id,
+        mart.eligibility_at,
+        mart.observation_end_at,
+        CASE
+            WHEN mart.purchase_boundary_flag = 1
+                THEN correction.next_purchase_at
+            ELSE mart.mart_next_purchase_at
+        END AS next_purchase_at
+    FROM mart_context mart
+    LEFT JOIN raw_corrections correction
+      ON mart.user_id = correction.user_id
+     AND mart.product_id = correction.product_id
+     AND mart.cart_anchor_at = correction.cart_anchor_at
+), eligible_users AS (
+    SELECT
+        user_id,
+        product_id,
+        eligibility_at,
+        observation_end_at,
+        next_purchase_at
+    FROM corrected_context
+    WHERE eligibility_at + INTERVAL 7 DAY <= observation_end_at
+      AND (
+          next_purchase_at IS NULL
+          OR next_purchase_at > eligibility_at
+      )
+)
+SELECT
+    보유_사용자상품수,
+    구매_사용자상품수,
+    COUNT(*) AS 사용자수
+FROM (
+    SELECT
+        user_id,
+        COUNT(*) AS 보유_사용자상품수,
+        SUM(
+            next_purchase_at > eligibility_at
+            AND next_purchase_at <= eligibility_at + INTERVAL 7 DAY
+        ) AS 구매_사용자상품수
+    FROM eligible_users
+    GROUP BY user_id
+) per_user
+GROUP BY 보유_사용자상품수, 구매_사용자상품수
+ORDER BY 보유_사용자상품수, 구매_사용자상품수;

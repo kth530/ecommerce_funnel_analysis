@@ -112,7 +112,12 @@ def calculate_experiment_design(
     rolling_window: int = 28,
     conservative_quantile: float = 0.25,
 ) -> ExperimentDesignResult:
-    """Calculate the canonical 1:1 experiment designs without display rounding."""
+    """Calculate the canonical 1:1 experiment designs without display rounding.
+
+    `daily_eligible_users`의 단위는 호출자가 정한다. 05 분석은 (사용자, 상품) 쌍을
+    넘기므로 반환되는 필요 표본도 쌍 수다. 배정은 사용자 단위이므로, 표본을 사용자
+    수로 환산하는 일은 호출자가 쌍/사용자 비율로 수행한다.
+    """
     baseline_rate = _validate_probability(baseline_rate, "baseline_rate")
     alpha = _validate_probability(alpha, "alpha")
     power = _validate_probability(power, "power")
@@ -156,8 +161,8 @@ def calculate_experiment_design(
             "기준구매율_pct": baseline_rate * 100,
             "처리군_목표구매율_pct": target_rate * 100,
             "절대_MDE_pctp": (target_rate - baseline_rate) * 100,
-            "군별_필요사용자수": users_per_group,
-            "전체_필요사용자수": total_users,
+            "군별_필요표본수": users_per_group,
+            "전체_필요표본수": total_users,
             "예상_모집일수": recruitment_days,
             "7일추적포함_최소일수": recruitment_days + tracking_days,
             "보수적_예상모집일수": conservative_recruitment_days,
