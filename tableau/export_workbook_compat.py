@@ -142,7 +142,9 @@ def build_experiment_design(experiment_daily, cart_rates, cluster_dist) -> pd.Da
         mde = int(s.상대_MDE.removeprefix("+").removesuffix("%"))
         group_pairs = ex.inflate(s.군별_필요표본수, design_effect)
         total_pairs = ex.inflate(s.전체_필요표본수, design_effect)
-        total_days = ex.inflate(s.예상_모집일수, design_effect) + design.tracking_days
+        total_days = ex.recruit_days(
+            total_pairs, design.average_daily_eligible_users
+        ) + design.tracking_days
         rows.append({
             "MDE_상대_pct": mde,
             "대조군_7일구매율_pct": round(s.기준구매율_pct, 3),

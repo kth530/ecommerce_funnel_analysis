@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import json
 import os
 import sys
@@ -307,8 +308,19 @@ def cluster_design_effect(cluster_dist: pd.DataFrame) -> tuple[float, float, flo
 
 
 def inflate(value: float, design_effect: float) -> int:
-    """설계효과를 곱해 올림한다. 표본·기간에 같은 배수를 적용한다."""
+    """설계효과를 곱해 올림한다."""
     return -(-int(value) * int(round(design_effect * 1000)) // 1000)
+
+
+def recruit_days(required_sample: int, daily_volume: float) -> int:
+    """필요 표본을 하루 유입으로 나눠 모집 일수를 구한다.
+
+    보정 전 모집일수(이미 올림된 값)에 설계효과를 곱하면 올림 오차까지 함께
+    불어나 실제보다 길게 나온다. 보정된 표본에서 한 번에 나눈다.
+    """
+    if daily_volume <= 0:
+        raise ValueError("하루 유입이 0 이하일 수 없습니다.")
+    return math.ceil(required_sample / daily_volume)
 
 
 def _experiment_design(
@@ -335,10 +347,12 @@ def _experiment_design(
     design_row = design.sample_size.iloc[0]
     icc, _adjusted, design_effect = cluster_design_effect(cluster_dist)
     required_pairs = inflate(design_row["전체_필요표본수"], design_effect)
-    total_days = inflate(design_row["예상_모집일수"], design_effect) + TRACKING_DAYS
-    conservative_days = total_days + (
-        int(design_row["보수적_7일추적포함_일수"]) - int(design_row["7일추적포함_최소일수"])
-    )
+    total_days = recruit_days(
+        required_pairs, design.average_daily_eligible_users
+    ) + TRACKING_DAYS
+    conservative_days = recruit_days(
+        required_pairs, design.conservative_daily_eligible_users
+    ) + TRACKING_DAYS
     interval_rates = cart_rates.set_index("구간순서")[
         "구간별다음24시간구매율_pct"
     ]
@@ -399,8 +413,8 @@ def _validate_regression(
         "기준구매율_pct": 4.700,
         "목표구매율_pct": 4.935,
         "전체필요표본_쌍": 763_479,
-        "평균유입기준기간_일": 43,
-        "보수적기간_일": 44,
+        "평균유입기준기간_일": 41,
+        "보수적기간_일": 45,
     }
     for column, expected in expected_experiment.items():
         if row[column] != expected:
