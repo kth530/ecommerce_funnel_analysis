@@ -32,7 +32,7 @@ Fingerprint는 다음 항목으로 구성한다.
 
 Cache는 `cache/<sql-file>/<query-name>/<fingerprint>.parquet`와 같은 fingerprint의 `.meta.json`으로 저장한다. parquet와 metadata는 같은 디렉터리의 임시 파일에 먼저 기록한 뒤 atomic replace한다. metadata에는 생성 시각(UTC), 행 수, 컬럼 순서, dtype, parquet SHA-256과 정렬 독립 DataFrame content hash를 기록한다.
 
-`QueryCache`는 `cache/<query-name>.parquet` 형식의 provenance 없는 flat legacy cache를 읽거나 fallback으로 사용하지 않는다. 해당 파일이 남아 있어도 cache miss로 처리하고 DB query를 다시 실행한다. metadata 누락·fingerprint 불일치·parquet 손상도 같은 방식으로 cache miss 처리한다. `refresh=True`는 유효한 content-addressed cache가 있어도 읽지 않고 query를 다시 실행한다. Notebook 01의 13개 name-only cache는 위 예외 정책에 따라 현재도 active이며 Notebook 03-05의 obsolete flat cache와 구분한다.
+`QueryCache`는 `cache/<query-name>.parquet` 형식의 provenance 없는 flat legacy cache를 읽거나 fallback으로 사용하지 않는다. 해당 파일이 남아 있어도 cache miss로 처리하고 DB query를 다시 실행한다. metadata 누락·fingerprint 불일치·parquet 손상도 같은 방식으로 cache miss 처리한다. `refresh=True`는 유효한 content-addressed cache가 있어도 읽지 않고 query를 다시 실행한다. 저장소에 남아 있는 `cache/<query-name>.parquet` 13개도 이 정책에 따라 읽지 않는다. 과거 실행의 잔존물이며 삭제해도 현재 분석에 영향이 없다.
 
 Cache는 언제든 현재 SQL과 원본 DB에서 재생성할 수 있는 로컬 산출물이며 Git에서 제외한다. `FUNNEL_CACHE_DIR` 환경변수 또는 helper의 `cache_dir` 인자로 기본 `cache/` 경로를 바꿀 수 있다.
 
