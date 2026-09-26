@@ -6,7 +6,7 @@
 
 - Notebook 03-05는 `QueryCache`를 사용해 content-addressed parquet와 provenance metadata를 함께 검증한다.
 - `tableau/export_tableau.py`와 `tableau/export_workbook_compat.py`는 현재 조건과 일치하는 검증된 Notebook 05 cache만 읽으며 DB 재조회나 legacy fallback을 수행하지 않는다.
-- Notebook 01은 아직 `cache/<query-name>.parquet` 형식의 name-only cache를 직접 사용한다. 이 cache는 SQL·parameter·schema provenance를 검증하지 않으므로, SQL이나 원본 조건이 바뀌면 해당 query를 `refresh=True`로 실행해 갱신해야 한다.
+- Notebook 01도 `QueryCache`를 사용한다. `cache/<query-name>.parquet` 형식의 name-only cache 파일 13개가 저장소에 남아 있으나 현재 어느 notebook도 읽지 않는 과거 실행의 잔존물이다.
 
 ## Fingerprint
 
