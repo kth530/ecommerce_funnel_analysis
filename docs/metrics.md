@@ -37,7 +37,7 @@
 - **동일 상품 view→cart 순차 전환율** = 같은 세션·상품에서 view 이후 cart가 발생한 session-product 수 / view 도달 session-product 수.
 - **동일 상품 cart→purchase 순차 전환율** = 같은 세션·상품에서 `view → cart` 이후 purchase가 발생한 session-product 수 / `view → cart` 순차 도달 session-product 수.
 - **동일 상품 조회→담기→구매 전 구간 전환율** = 같은 세션·상품에서 strict `view → cart → purchase`가 확인된 session-product 수 / view 도달 session-product 수.
-- **사용자·상품 N일 구매 전환율** = 관측 기간 내 사용자·상품별 최초 view가 있고 그 이후 N일을 끝까지 관측할 수 있는 조합 중, 해당 view보다 나중이면서 N일 이내인 동일 상품 purchase가 확인된 조합의 비율. 한 사용자·상품을 분모에서 한 번만 세며, 최초 view는 생애 최초가 아니라 관측 기간 내 최초 view다. 04의 세션 내 3단계 완주율과 분석 단위·관측 기간이 다른 별도 지표로 관리한다.
+- **사용자·상품 N일 구매 전환율** = 관측 기간 내 사용자·상품별 최초 view가 있고 그 이후 N일을 끝까지 관측할 수 있는 조합 중, 해당 view보다 나중이면서 N일 이내인 동일 상품 purchase가 확인된 조합의 비율. 한 사용자·상품을 분모에서 한 번만 세며, 최초 view는 생애 최초가 아니라 관측 기간 내 최초 view다. 04의 **동일 상품 3단계 순차 퍼널**과 분석 단위·관측 기간이 다른 별도 지표로 관리한다.
 - **view·purchase 동반, cart 미도달 세션**: `views > 0 AND carts = 0 AND purchases > 0`인 세션이다. 세 이벤트의 존재 여부만 확인한 경계 집계이므로 strict `view → purchase`를 뜻하지 않는다. 정확한 선후와 대표 구매 전 cart 확인 여부는 05에서 이벤트 시각으로 판정한다.
 - **직접 진입 경로**: 선행 단계 없이 cart 또는 purchase가 관찰된 세션·session-product는 순차 전환 분자에서 제외하고 선형 퍼널 밖 경로로 별도 집계한다. 세션 내 미구매는 관측 기간 전체의 구매 포기나 사용자 이탈을 의미하지 않는다.
 - **revenue** = `event_type = 'purchase'` AND `price > 0` 인 이벤트의 `price` 합.
