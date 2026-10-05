@@ -1,0 +1,232 @@
+{
+  "dataset_version": "cosmetics-shop-events_2019-10-01_2020-02-29_rows-20692840",
+  "mart_definition_hashes": {
+    "create_mart_session": "1e93dfaebb6178596dc4d7b9930e934343d04263dda0b55cb8da6735104bfea6",
+    "create_mart_session_product": "1d9c35f8c2f3df2041c81f85581cc1aa41aba38b3a1f87f9044924098948c786",
+    "create_mart_user_product_session": "fd33cfdcbfe51aa6ca896f5aba682ce536568c4863d6581cb643f33c170071d1"
+  },
+  "queries": {
+    "data_overview.sql": {
+      "base_scalars": {
+        "cache_namespace": "01_raw_eda",
+        "cache_query_sql_sha256": "572e1127259d3c02a41aabae23f0872d9d4c858508c1c2794cd1d4a0a0732de6",
+        "cache_sql_file_label": "sql/01_raw_eda.sql",
+        "cache_sql_file_sha256": "c3911cca330b2d14df3ef5bf9ad81a841d5a41da8f7af531799082176afb72fc",
+        "cache_upstream_sql_sha256": {},
+        "normalized_query_sha256": "8e5d7795f484dd012e8fec022872b4c2f81c38dbf59745e8588da59c3f5d17ec",
+        "requires_mart_definitions": false
+      },
+      "daily_trend": {
+        "cache_namespace": "01_raw_eda",
+        "cache_query_sql_sha256": "9549f7bf5bd693fa5e00fbd1bcfa41b62a6b262d0dbd070c6d79521105a4f01b",
+        "cache_sql_file_label": "sql/01_raw_eda.sql",
+        "cache_sql_file_sha256": "c3911cca330b2d14df3ef5bf9ad81a841d5a41da8f7af531799082176afb72fc",
+        "cache_upstream_sql_sha256": {},
+        "normalized_query_sha256": "d0210a2c8cef12f9fd2e7618fdb273b7df3533912c436cf8d5298dc87a7002df",
+        "requires_mart_definitions": false
+      },
+      "distinct_sessions": {
+        "cache_namespace": "01_raw_eda",
+        "cache_query_sql_sha256": "30443b999342cab03096d10f04fac9273d3d16bf835a8abfef31f94a78bc60cf",
+        "cache_sql_file_label": "sql/01_raw_eda.sql",
+        "cache_sql_file_sha256": "c3911cca330b2d14df3ef5bf9ad81a841d5a41da8f7af531799082176afb72fc",
+        "cache_upstream_sql_sha256": {},
+        "normalized_query_sha256": "dcff16bd43de47c6bd0a3888a964e551b80cbf3803eace102a64299c241fc8a4",
+        "requires_mart_definitions": false
+      },
+      "distinct_users": {
+        "cache_namespace": "01_raw_eda",
+        "cache_query_sql_sha256": "6850785630021d46cfeac3feef1901e965241166e1d69857ae1f18be6e28a518",
+        "cache_sql_file_label": "sql/01_raw_eda.sql",
+        "cache_sql_file_sha256": "c3911cca330b2d14df3ef5bf9ad81a841d5a41da8f7af531799082176afb72fc",
+        "cache_upstream_sql_sha256": {},
+        "normalized_query_sha256": "63bad3ae637c6a3a1451f38501143b7bedb537335db0e7196bd9a79f01a43a4a",
+        "requires_mart_definitions": false
+      },
+      "overview_raw_product_count": {
+        "cache_namespace": "03_overview",
+        "cache_query_sql_sha256": "87e0f0f3e889a841527a143df7218819ae9171ac45e2d6682e6b86978ab29860",
+        "cache_sql_file_label": "final_analysis/03_overview.sql",
+        "cache_sql_file_sha256": "f6b0b2c79680001758ebd03ebb637870ca274f4b214528264404d23b8aaa61ee",
+        "cache_upstream_sql_sha256": {},
+        "normalized_query_sha256": "87e0f0f3e889a841527a143df7218819ae9171ac45e2d6682e6b86978ab29860",
+        "requires_mart_definitions": false
+      }
+    },
+    "eda.sql": {
+      "fn_session_funnel": {
+        "cache_namespace": "04_funnel_eda",
+        "cache_query_sql_sha256": "7c80574fd7054f2e400d3c184619e7807c51a68d90aac32e92326307ee31ee58",
+        "cache_sql_file_label": "sql/04_funnel_eda.sql",
+        "cache_sql_file_sha256": "92cc023835d3794e2ffa00432cb784cba69dd12721671bf1929e58a8d1bcef96",
+        "cache_upstream_sql_sha256": {
+          "sql/02_preprocessing_mart.sql": "96d1378afeddbb86bd4a917b88f9a0eb115ef0915ba15b4c114b46c891121ac0"
+        },
+        "normalized_query_sha256": "55533b9485b94fea548cd891bcfce9c2da44a8e0de1569364b8d3b227736c61f",
+        "requires_mart_definitions": true
+      },
+      "fn_user_product_session_scope": {
+        "cache_namespace": "04_funnel_eda",
+        "cache_query_sql_sha256": "df9ff8de2f32a33c9c42989739c5840b6a9bcca3a94b4df92cc86998df8c83c0",
+        "cache_sql_file_label": "sql/04_funnel_eda.sql",
+        "cache_sql_file_sha256": "92cc023835d3794e2ffa00432cb784cba69dd12721671bf1929e58a8d1bcef96",
+        "cache_upstream_sql_sha256": {
+          "sql/02_preprocessing_mart.sql": "96d1378afeddbb86bd4a917b88f9a0eb115ef0915ba15b4c114b46c891121ac0"
+        },
+        "normalized_query_sha256": "94860c56e47ec2ad6418d785e7b544e0781dc99b6c8a5faa32ebe381d585ca07",
+        "requires_mart_definitions": true
+      },
+      "pj_30day_purchase_cohort": {
+        "cache_namespace": "05_purchase_journey_analysis",
+        "cache_query_sql_sha256": "7ef25bace67d2200e646cba02c414372ad803a79372f0840bf3a027ee581b8d6",
+        "cache_sql_file_label": "sql/05_purchase_journey_analysis.sql",
+        "cache_sql_file_sha256": "ede1d51833f476e1e4f84e1a8d83b9103361b73a3bae8c5c3d9588b613fe1072",
+        "cache_upstream_sql_sha256": {
+          "sql/02_preprocessing_mart.sql": "96d1378afeddbb86bd4a917b88f9a0eb115ef0915ba15b4c114b46c891121ac0"
+        },
+        "normalized_query_sha256": "b90d767aaa5799e8748b1fdcbf10079fbcfcafdb4cfb2dbfc856d4ba6b43490f",
+        "requires_mart_definitions": true
+      },
+      "pj_boundary_raw_paths": {
+        "cache_namespace": "05_purchase_journey_analysis",
+        "cache_query_sql_sha256": "0ed0d18fd88e4c1b92fe2df61cf272e2d4c3a96801a2ba90b5b5c619c4f26825",
+        "cache_sql_file_label": "sql/05_purchase_journey_analysis.sql",
+        "cache_sql_file_sha256": "ede1d51833f476e1e4f84e1a8d83b9103361b73a3bae8c5c3d9588b613fe1072",
+        "cache_upstream_sql_sha256": {
+          "sql/02_preprocessing_mart.sql": "96d1378afeddbb86bd4a917b88f9a0eb115ef0915ba15b4c114b46c891121ac0"
+        },
+        "normalized_query_sha256": "1271e4e45b8ecb981813e53ebd990b8b0b7ec74a3002852e1b166a0409ad3edc",
+        "requires_mart_definitions": true
+      },
+      "pj_cart_boundary_raw_next_purchase": {
+        "cache_namespace": "05_purchase_journey_analysis",
+        "cache_query_sql_sha256": "469db979e029f82dc4a9440d0e8336f55116608f369755abe39a44e8d2f8d83d",
+        "cache_sql_file_label": "sql/05_purchase_journey_analysis.sql",
+        "cache_sql_file_sha256": "ede1d51833f476e1e4f84e1a8d83b9103361b73a3bae8c5c3d9588b613fe1072",
+        "cache_upstream_sql_sha256": {
+          "sql/02_preprocessing_mart.sql": "96d1378afeddbb86bd4a917b88f9a0eb115ef0915ba15b4c114b46c891121ac0"
+        },
+        "normalized_query_sha256": "7df9d1297db066aaadcc2badb623a3614fe07795190d9113d74ff8ce8a2b6b9b",
+        "requires_mart_definitions": true
+      },
+      "pj_cart_purchase_boundaries": {
+        "cache_namespace": "05_purchase_journey_analysis",
+        "cache_query_sql_sha256": "738f0c33ab7af31738d42d8c73c59649180ab2b42f35ba4240c2d2b4e6303763",
+        "cache_sql_file_label": "sql/05_purchase_journey_analysis.sql",
+        "cache_sql_file_sha256": "ede1d51833f476e1e4f84e1a8d83b9103361b73a3bae8c5c3d9588b613fe1072",
+        "cache_upstream_sql_sha256": {
+          "sql/02_preprocessing_mart.sql": "96d1378afeddbb86bd4a917b88f9a0eb115ef0915ba15b4c114b46c891121ac0"
+        },
+        "normalized_query_sha256": "860c25575b1846e27a64a867d739942325c5e1b11533b576028f3d97ef7835f7",
+        "requires_mart_definitions": true
+      },
+      "pj_cart_purchase_next_24h_rate": {
+        "cache_namespace": "05_purchase_journey_analysis",
+        "cache_query_sql_sha256": "581df2111f08a71b14d8cf414af471e0b685c7cb8861ab5c8ff5bc1fb468b3bc",
+        "cache_sql_file_label": "sql/05_purchase_journey_analysis.sql",
+        "cache_sql_file_sha256": "ede1d51833f476e1e4f84e1a8d83b9103361b73a3bae8c5c3d9588b613fe1072",
+        "cache_upstream_sql_sha256": {
+          "sql/02_preprocessing_mart.sql": "96d1378afeddbb86bd4a917b88f9a0eb115ef0915ba15b4c114b46c891121ac0"
+        },
+        "normalized_query_sha256": "37af3c354afb37b44b5ac1f89af6ed93bb42436c3ad952704d93909ed7b09fde",
+        "requires_mart_definitions": true
+      },
+      "pj_experiment_baseline": {
+        "cache_namespace": "05_purchase_journey_analysis",
+        "cache_query_sql_sha256": "f25b22cc34a3b09f017c6aa5083fa9621753800df00c37601f3c4fd2a9c4e132",
+        "cache_sql_file_label": "sql/05_purchase_journey_analysis.sql",
+        "cache_sql_file_sha256": "ede1d51833f476e1e4f84e1a8d83b9103361b73a3bae8c5c3d9588b613fe1072",
+        "cache_upstream_sql_sha256": {
+          "sql/02_preprocessing_mart.sql": "96d1378afeddbb86bd4a917b88f9a0eb115ef0915ba15b4c114b46c891121ac0"
+        },
+        "normalized_query_sha256": "af8bcae231f290d7a8742cc43eb0c573348f935641a869b04693367bf85f4f16",
+        "requires_mart_definitions": true
+      },
+      "pj_experiment_user_cluster": {
+        "cache_namespace": "05_purchase_journey_analysis",
+        "cache_query_sql_sha256": "0a47dcec750899ac0f8b77853577d9746349310fd5eeb963f54ddb1afa155d52",
+        "cache_sql_file_label": "sql/05_purchase_journey_analysis.sql",
+        "cache_sql_file_sha256": "ede1d51833f476e1e4f84e1a8d83b9103361b73a3bae8c5c3d9588b613fe1072",
+        "cache_upstream_sql_sha256": {
+          "sql/02_preprocessing_mart.sql": "96d1378afeddbb86bd4a917b88f9a0eb115ef0915ba15b4c114b46c891121ac0"
+        },
+        "normalized_query_sha256": "a1f078bedf8fe21e1186bf9f0d083ebd9c0a8215d34c781f747c02c864286dfa",
+        "requires_mart_definitions": true
+      },
+      "pj_representative_purchase_mart": {
+        "cache_namespace": "05_purchase_journey_analysis",
+        "cache_query_sql_sha256": "d288df607ae50b72ab64f89f2d53a7d5cec4c99d5e7262cde49b686a71bb5292",
+        "cache_sql_file_label": "sql/05_purchase_journey_analysis.sql",
+        "cache_sql_file_sha256": "ede1d51833f476e1e4f84e1a8d83b9103361b73a3bae8c5c3d9588b613fe1072",
+        "cache_upstream_sql_sha256": {
+          "sql/02_preprocessing_mart.sql": "96d1378afeddbb86bd4a917b88f9a0eb115ef0915ba15b4c114b46c891121ac0"
+        },
+        "normalized_query_sha256": "15811c4ce4a06c5c878e1b3fb1f4f0eecc1818fc35247f903247ac831cd36289",
+        "requires_mart_definitions": true
+      },
+      "purchase_only_prior_30d": {
+        "cache_namespace": "03_session_paths",
+        "cache_query_sql_sha256": "36ea602741697003d1f9dfb111286871d380b57e5ba73b525cc5e0b7cc586f99",
+        "cache_sql_file_label": "final_analysis/03_session_paths.sql",
+        "cache_sql_file_sha256": "a29d9c76c1af88b27b669d712b70b90b1ee19656ffd5a611452e155861609dc8",
+        "cache_upstream_sql_sha256": {
+          "sql/02_preprocessing_mart.sql": "96d1378afeddbb86bd4a917b88f9a0eb115ef0915ba15b4c114b46c891121ac0"
+        },
+        "normalized_query_sha256": "3e8242756a82129da79c4ad0be2aa996ed545d9f2e090a7a5e10a4bbca0c4200",
+        "requires_mart_definitions": true
+      },
+      "purchase_session_paths": {
+        "cache_namespace": "03_session_paths",
+        "cache_query_sql_sha256": "5848c2b204518c4dfc9b24878923d6a86f5697702bf9727d3f94457175ed7432",
+        "cache_sql_file_label": "final_analysis/03_session_paths.sql",
+        "cache_sql_file_sha256": "a29d9c76c1af88b27b669d712b70b90b1ee19656ffd5a611452e155861609dc8",
+        "cache_upstream_sql_sha256": {
+          "sql/02_preprocessing_mart.sql": "96d1378afeddbb86bd4a917b88f9a0eb115ef0915ba15b4c114b46c891121ac0"
+        },
+        "normalized_query_sha256": "ea9911c658645b32f86eb999a096faa93ab23e6b92f7337d301aa2cc19ef84a7",
+        "requires_mart_definitions": true
+      }
+    },
+    "mart_overview.sql": {
+      "mart_inventory": {
+        "cache_namespace": "03_mart_eda",
+        "cache_query_sql_sha256": "cbb40b9fccbcba11098a621623940866fad4a8429388ac64232014c694ad58aa",
+        "cache_sql_file_label": "sql/03_mart_eda.sql",
+        "cache_sql_file_sha256": "19e6ceb99bee935583a9b303c712f339eed43d011964285701308a656c2da69b",
+        "cache_upstream_sql_sha256": {
+          "sql/02_preprocessing_mart.sql": "96d1378afeddbb86bd4a917b88f9a0eb115ef0915ba15b4c114b46c891121ac0"
+        },
+        "normalized_query_sha256": "cfb03f38fc3f7cf9044ee05b059368b1c0635930bcb545b6e2cf63ee7962b58a",
+        "requires_mart_definitions": true
+      },
+      "mart_session_product_reconciliation": {
+        "cache_namespace": "02_preprocessing_mart",
+        "cache_query_sql_sha256": "db7a0f98a13076437b95b2103cdee320e7ee601ac3d4aec5dfe5dfc5a318b2be",
+        "cache_sql_file_label": "sql/02_preprocessing_mart.sql",
+        "cache_sql_file_sha256": "96d1378afeddbb86bd4a917b88f9a0eb115ef0915ba15b4c114b46c891121ac0",
+        "cache_upstream_sql_sha256": {},
+        "normalized_query_sha256": "db7a0f98a13076437b95b2103cdee320e7ee601ac3d4aec5dfe5dfc5a318b2be",
+        "requires_mart_definitions": true
+      },
+      "mart_session_reconciliation": {
+        "cache_namespace": "02_preprocessing_mart",
+        "cache_query_sql_sha256": "f20c1e6a2410e2db7e71884a4b56756fc095575d92dff974b4cb6ff1e415ff31",
+        "cache_sql_file_label": "sql/02_preprocessing_mart.sql",
+        "cache_sql_file_sha256": "96d1378afeddbb86bd4a917b88f9a0eb115ef0915ba15b4c114b46c891121ac0",
+        "cache_upstream_sql_sha256": {},
+        "normalized_query_sha256": "f20c1e6a2410e2db7e71884a4b56756fc095575d92dff974b4cb6ff1e415ff31",
+        "requires_mart_definitions": true
+      },
+      "mart_user_product_session_reconciliation": {
+        "cache_namespace": "02_preprocessing_mart",
+        "cache_query_sql_sha256": "310aebae7f9ac1f71d78160fb87ccd25f194887d82190e6a1e9fd19aa3503139",
+        "cache_sql_file_label": "sql/02_preprocessing_mart.sql",
+        "cache_sql_file_sha256": "96d1378afeddbb86bd4a917b88f9a0eb115ef0915ba15b4c114b46c891121ac0",
+        "cache_upstream_sql_sha256": {},
+        "normalized_query_sha256": "310aebae7f9ac1f71d78160fb87ccd25f194887d82190e6a1e9fd19aa3503139",
+        "requires_mart_definitions": true
+      }
+    }
+  },
+  "version": 1
+}

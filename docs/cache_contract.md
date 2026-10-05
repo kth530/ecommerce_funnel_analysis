@@ -15,7 +15,7 @@ Fingerprint는 다음 항목으로 구성한다.
 - cache contract version
 - query name과 실제 named query SQL 본문 SHA-256
 - 해당 분석 SQL 파일 전체 SHA-256
-- `sql/02_preprocessing_mart.sql` 등 명시적으로 전달한 upstream SQL SHA-256
+- 기존 캐시 생성 시 명시적으로 전달한 upstream SQL SHA-256(최종 분석은 호환 manifest에 고정된 값을 검증)
 - `cache_context.json`의 dataset version
 - query parameter의 결정론적 hash
 - 결과에 영향을 주는 `pandas.read_sql()` kwargs의 결정론적 hash
@@ -38,4 +38,4 @@ Cache는 언제든 현재 SQL과 원본 DB에서 재생성할 수 있는 로컬 
 
 ## Tableau export
 
-`tableau/export_tableau.py`는 DB를 재조회하지 않는다. 현재 `sql/05_purchase_journey_analysis.sql`, dataset version, 상위 마트 SQL, DB source에 맞는 출처 검증을 통과한 05 cache만 읽는다. legacy cache나 provenance 불일치 cache가 있으면 export를 중단한다.
+`tableau/export_tableau.py`와 `tableau/export_workbook_compat.py`는 DB를 재조회하지 않는다. 현재 `sql/eda.sql`과 `sql/cache_compatibility.json`으로 쿼리·마트 정의·기존 캐시 출처를 검증한 결과만 읽는다. legacy cache나 provenance 불일치 cache가 있으면 export를 중단한다.

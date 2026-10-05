@@ -1,10 +1,165 @@
--- 05 대표 첫 구매 여정 분석
--- 구매 경로의 분석 단위는 user_id × product_id다.
--- 대표 구매는 최초 view < purchase_at <= 최초 view + 30일인 가장 빠른 동일 상품 purchase다.
--- 마트의 최초·최종 시각 사이에 기준 시점이 있는 다중 purchase는 raw events로 보완한다.
--- 최초 cart 시간 지표도 같은 원칙으로 경계를 분리하고, 관련 세션의 31일 범위만 raw 조회한다.
+-- 포트폴리오 가설 검증 SQL. notebooks/04_eda.ipynb 대응.
+-- 기존 명명 쿼리의 SQL 본문을 재사용한다. 저장된 최종 노트북은 원본 파일 캐시를 읽는다.
+-- 이 파일로 재실행하거나 캐시를 새로 만드는 작업은 이번 개정에서 하지 않았다.
+-- 각 경로는 strict 시각 비교를 따르며 로그 미확인은 실제 행동 부재가 아니다.
 
--- name: pj_30day_purchase_cohort | 경로 분류와 독립된 30일 대표 첫 구매 cohort 집계
+-- ==================================================
+-- 1. 가설 1: 구매 세션의 첫 purchase 이전 동일 상품 A-E 경로
+-- ==================================================
+
+
+-- name: purchase_session_paths | 구매 세션×상품 첫 구매 이전 경로 A-E
+-- 출처: final_analysis/03_session_paths.sql, 쿼리 본문 재사용.
+-- 목적/연결: 노트북 §3 첫 분석.
+-- grain: 구매가 있는 user_session × product_id. 분모: 구매 세션×상품 전체.
+-- 분석 단위: 구매가 있는 user_session × product_id, 조합마다 해당 세션의 첫 purchase 한 건.
+-- strict event_time < first_purchase_at. remove는 주경로 분류에 사용하지 않는다.
+SELECT
+    CASE
+        WHEN has_view_cart_before_first_purchase = 1 THEN 'A_view_cart_purchase'
+        WHEN last_view_before_first_purchase_at IS NOT NULL
+         AND last_cart_before_first_purchase_at IS NULL THEN 'B_view_purchase'
+        WHEN last_view_before_first_purchase_at IS NULL
+         AND last_cart_before_first_purchase_at IS NOT NULL THEN 'C_cart_purchase'
+        WHEN last_view_before_first_purchase_at IS NOT NULL
+         AND last_cart_before_first_purchase_at IS NOT NULL THEN 'D_nonstandard_both'
+        ELSE 'E_purchase_only'
+    END AS path_code,
+    COUNT(*) AS purchase_session_products
+FROM mart_user_product_session FORCE INDEX (idx_mups_first_purchase)
+WHERE first_purchase_at IS NOT NULL
+GROUP BY path_code
+ORDER BY path_code
+
+-- ==================================================
+-- 2. 가설 1: Purchase only의 이전 세션 30일 lookback
+-- ==================================================
+
+
+-- name: purchase_only_prior_30d | A-E 중 E만 이전 세션 행동 E1-E5로 분해
+-- 출처: final_analysis/03_session_paths.sql, 쿼리 본문 재사용.
+-- 목적/연결: 노트북 §3 두 번째 분석.
+-- grain: 30일 lookback 적격 Purchase only 세션×상품. 분모: 적격 E; 전체 E와 구분.
+-- 첫 purchase 시각 기준 과거 30일의 완전 lookback이 가능한 경우만 사용한다.
+-- 이전 세션은 session_end < 현재 구매 세션의 session_start인 세션으로 제한한다.
+-- 유효 세션은 최장 1일이므로 인덱스 범위는 31일로 넓히고, 실제 행동은 30일 창으로 판정한다.
+WITH purchase_only AS (
+    SELECT
+        user_id,
+        product_id,
+        user_session,
+        session_start,
+        first_purchase_at
+    FROM mart_user_product_session FORCE INDEX (idx_mups_first_purchase)
+    WHERE first_purchase_at >= '2019-10-31 00:00:00'
+      AND last_view_before_first_purchase_at IS NULL
+      AND last_cart_before_first_purchase_at IS NULL
+),
+prior_rollup AS (
+    SELECT
+        current_purchase.user_session,
+        current_purchase.product_id,
+        MIN(CASE
+            WHEN prior.first_view_at >= current_purchase.first_purchase_at - INTERVAL 30 DAY
+            THEN prior.first_view_at
+            WHEN prior.last_view_at >= current_purchase.first_purchase_at - INTERVAL 30 DAY
+            THEN prior.last_view_at
+        END) AS first_confirmed_view_in_window,
+        MAX(CASE
+            WHEN prior.last_cart_at >= current_purchase.first_purchase_at - INTERVAL 30 DAY
+            THEN prior.last_cart_at
+        END) AS last_confirmed_cart_in_window
+    FROM purchase_only AS current_purchase
+    LEFT JOIN mart_user_product_session AS prior FORCE INDEX (idx_mups_user_product_start)
+      ON prior.user_id = current_purchase.user_id
+     AND prior.product_id = current_purchase.product_id
+     AND prior.session_start >= current_purchase.first_purchase_at - INTERVAL 31 DAY
+     AND prior.session_start < current_purchase.session_start
+     AND prior.session_end < current_purchase.session_start
+     AND prior.user_session <> current_purchase.user_session
+    GROUP BY current_purchase.user_session, current_purchase.product_id
+)
+SELECT
+    CASE
+        WHEN first_confirmed_view_in_window < last_confirmed_cart_in_window
+        THEN 'E1_prior_view_cart_ordered'
+        WHEN first_confirmed_view_in_window IS NOT NULL
+         AND last_confirmed_cart_in_window IS NULL
+        THEN 'E2_prior_view_only'
+        WHEN first_confirmed_view_in_window IS NULL
+         AND last_confirmed_cart_in_window IS NOT NULL
+        THEN 'E3_prior_cart_only'
+        WHEN first_confirmed_view_in_window IS NOT NULL
+         AND last_confirmed_cart_in_window IS NOT NULL
+        THEN 'E4_prior_both_order_unconfirmed'
+        ELSE 'E5_no_prior_view_cart_observed'
+    END AS prior_path_code,
+    COUNT(*) AS purchase_only_session_products
+FROM prior_rollup
+GROUP BY prior_path_code
+ORDER BY prior_path_code
+
+-- ==================================================
+-- 3. 가설 1: 세션 퍼널 진단과 복수 세션 관찰
+-- ==================================================
+
+
+-- name: fn_session_funnel | 유효 세션 내 조회→담기→구매 순차 퍼널
+-- 출처: sql/04_funnel_eda.sql, 쿼리 본문 재사용.
+-- 목적/연결: 노트북 §3 보조 진단.
+-- grain: user_session. 분모: mart_session 전체 유효 세션; 단계별 조건부 분모는 노트북 표 참조.
+-- 분석 단위·분모: user_session, mart_session의 유효 세션 전체.
+-- 시간 순서: 같은 세션에서 view_at < cart_at < purchase_at인 strict 플래그를 사용한다.
+-- 상품 동일성은 요구하지 않으므로 05의 사용자·상품 30일 대표 첫 구매 cohort와 직접 비교하지 않는다.
+SELECT
+    SUM(views > 0) AS view_도달,
+    SUM(has_cart_after_view) AS view_cart_순차,
+    SUM(has_purchase_after_view_cart) AS view_cart_purchase_순차,
+    COUNT(*) AS 유효세션
+FROM mart_session
+
+-- name: fn_user_product_session_scope | 동일 사용자×상품 복수 세션 관찰
+-- 출처: sql/04_funnel_eda.sql, 쿼리 본문 재사용.
+-- 목적/연결: 노트북 §3 단위 변경 근거.
+-- grain: user_id × product_id. 분모: mart_session_product에서 관찰된 사용자×상품; 17.171%는 구매율 아님.
+-- 분석 단위·분모: user_id × product_id, mart_session_product에서 관찰된 전체 조합.
+-- 시간 순서를 판정하지 않고 한 사용자·상품이 몇 개 세션에 나타났는지만 센다.
+-- 구매 여부와 30일 관측 조건을 적용하지 않으므로 05의 대표 첫 구매 cohort와 직접 비교하지 않는다.
+WITH user_product_summary AS (
+    SELECT
+        session.user_id,
+        product.product_id,
+        COUNT(*) AS 관측세션수
+    FROM mart_session_product product
+    JOIN mart_session session
+      ON product.user_session = session.user_session
+    GROUP BY session.user_id, product.product_id
+)
+SELECT
+    CASE
+        WHEN 관측세션수 = 1 THEN '1세션'
+        WHEN 관측세션수 = 2 THEN '2세션'
+        WHEN 관측세션수 <= 5 THEN '3-5세션'
+        ELSE '6+세션'
+    END AS 관측세션구간,
+    COUNT(*) AS 사용자상품_조합수,
+    SUM(관측세션수) AS 세션상품_조합수
+FROM user_product_summary
+GROUP BY 관측세션구간
+ORDER BY MIN(관측세션수)
+
+-- ==================================================
+-- 4. 가설 1: 30일 완전 관측과 대표 첫 구매 네 경로
+-- ==================================================
+
+-- 대표 첫 구매 분모는 30일 적격 사용자×상품 중 실제 대표 첫 구매가 확인된 조합.
+-- 30.361%는 그중 한 세션 조회→담기→구매 완결, 69.639%는 한 세션 3단계 미완결.
+-- 69.639%를 다른 세션 구매율로 읽지 않는다. raw 경계는 아래 제한 키로만 보완한다.
+
+-- name: pj_30day_purchase_cohort | 30일 완전 관측 및 마트 확정 대표 첫 구매 집계
+-- 출처: sql/05_purchase_journey_analysis.sql, 쿼리 본문 재사용.
+-- 목적/연결: 노트북 §3 대표 첫 구매.
+-- grain: user_id × product_id. 분모: 30일 완전 관측 적격군 또는 그중 대표 첫 구매; 최종 분모는 노트북 경계 보정 참조.
 -- 최종 cohort는 이 쿼리의 마트 확정 수에 raw에서 적격 purchase가 확인된
 -- 대표 구매 시각 경계 수를 더해 계산하며, path_order나 경로 행 수를 사용하지 않는다.
 WITH observation_period AS (
@@ -65,7 +220,10 @@ SELECT
         AS 대표구매시각_raw경계후보_사용자상품수
 FROM purchase_context;
 
--- name: pj_representative_purchase_mart | 대표 첫 구매의 마트 확정 경로와 raw 확인 경계
+-- name: pj_representative_purchase_mart | 대표 첫 구매 마트 확정 네 경로와 raw 경계 키
+-- 출처: sql/05_purchase_journey_analysis.sql, 쿼리 본문 재사용.
+-- 목적/연결: 노트북 §3 대표 첫 구매.
+-- grain: user_id × product_id. 분모: 30일 완전 관측 적격군 또는 그중 대표 첫 구매; 최종 분모는 노트북 경계 보정 참조.
 -- 마지막 purchase가 anchor+30일 밖이더라도 first_purchase <= anchor < last_purchase면
 -- 중간 purchase의 30일 내 존재 여부를 알 수 없으므로 raw 경계로 남긴다.
 WITH observation_period AS (
@@ -256,7 +414,10 @@ FROM purchase_context context
 WHERE context.purchase_boundary_flag = 1
 ORDER BY row_type, path_order, user_id, product_id;
 
--- name: pj_boundary_raw_paths | 대표 구매·중간 cart 경계의 raw 경로 보완
+-- name: pj_boundary_raw_paths | 대표 구매 시각·중간 cart 경계의 제한적 원본 보완
+-- 출처: sql/05_purchase_journey_analysis.sql, 쿼리 본문 재사용.
+-- 목적/연결: 노트북 §3 대표 첫 구매.
+-- grain: user_id × product_id. 분모: 30일 완전 관측 적격군 또는 그중 대표 첫 구매; 최종 분모는 노트북 경계 보정 참조.
 -- 입력 키는 pj_representative_purchase_mart에서 식별하며 최종 경로를 하드코딩하지 않는다.
 -- 적격 purchase가 없는 대표 구매 시각 후보도 1행으로 반환하고 path_order를 NULL로 둔다.
 WITH boundary_keys AS (
@@ -405,7 +566,18 @@ SELECT
 FROM action_flags
 ORDER BY user_id, product_id, boundary_type;
 
--- name: pj_cart_purchase_boundaries | 최초 cart가 다중 purchase 최초·최종 시각 사이인 사용자·상품
+-- ==================================================
+-- 5. 가설 2: 최초 cart 이후 조건부 구매 시간
+-- ==================================================
+
+-- 첫 24시간 분모는 최초 cart 후 7일 완전 관측 사용자×상품이다.
+-- 24-48시간 분모는 그중 0-24시간 미구매 사용자×상품이다.
+-- 19.040%와 1.623%는 서로 다른 조건부 분모다.
+
+-- name: pj_cart_purchase_boundaries | 다중 purchase의 최초 cart 경계 키
+-- 출처: sql/05_purchase_journey_analysis.sql, 쿼리 본문 재사용.
+-- 목적/연결: 노트북 §4 구매 시간.
+-- grain: user_id × product_id. 분모: 최초 cart 후 7일 완전 관측; 구간별 미구매 집단으로 감소.
 -- 분석 단위는 (사용자, 상품)별 최초 관측 cart 한 건이다. 30일 여정 분석과 같은 단위를 쓴다.
 -- 두 후속 지표의 공통 기반인 cart 이후 7일 관측 가능 사용자·상품만 raw 후보로 남긴다.
 WITH observation_period AS (
@@ -450,7 +622,10 @@ FROM boundary_flags
 WHERE purchase_boundary_flag = 1
 ORDER BY user_id, product_id;
 
--- name: pj_cart_boundary_raw_next_purchase | 최초 cart 다중 purchase 경계의 실제 다음 purchase
+-- name: pj_cart_boundary_raw_next_purchase | 129건 경계의 실제 다음 purchase 제한 조회
+-- 출처: sql/05_purchase_journey_analysis.sql, 쿼리 본문 재사용.
+-- 목적/연결: 노트북 §4 구매 시간.
+-- grain: user_id × product_id. 분모: 최초 cart 후 7일 완전 관측; 구간별 미구매 집단으로 감소.
 -- 두 후속 지표의 최대 판정 범위인 cart+31일까지 관련 세션·상품만 idx_repeat_events로 조회한다.
 WITH boundary_keys AS (
     SELECT
@@ -504,7 +679,10 @@ GROUP BY
     boundary.cart_anchor_at
 ORDER BY user_id, product_id;
 
--- name: pj_cart_purchase_next_24h_rate | 최초 cart 후 구간별 다음 24시간 동일 상품 구매율
+-- name: pj_cart_purchase_next_24h_rate | 최초 cart 후 24시간 구간별 조건부 구매율 원시 집계
+-- 출처: sql/05_purchase_journey_analysis.sql, 쿼리 본문 재사용.
+-- 목적/연결: 노트북 §4 구매 시간.
+-- grain: user_id × product_id. 분모: 최초 cart 후 7일 완전 관측; 구간별 미구매 집단으로 감소.
 -- cart 다중 purchase 경계는 pj_cart_boundary_raw_next_purchase 결과로 교체한다.
 WITH raw_corrections AS (
     SELECT
@@ -618,7 +796,18 @@ FROM interval_populations
 GROUP BY interval_order, start_day, end_day
 ORDER BY interval_order;
 
--- name: pj_experiment_baseline | cart+24시간 실험 적격 사용자·상품과 7일 구매 기준선
+-- ==================================================
+-- 6. 가설 2: cart+24시간 미구매 실험 적격군과 자연 구매 기준선
+-- ==================================================
+
+-- 구매자 경로 모집단과 별도다. 분모는 cart+24시간까지 미구매이고
+-- 그 뒤 7일을 완전 관측할 수 있는 사용자×상품; 자연 구매 기준선 4.700%.
+-- 아래 쿼리는 실험 실행·무작위 배정·효과 추정이 아닌 관찰 데이터 기준선이다.
+
+-- name: pj_experiment_baseline | 실험 적격 조합과 기준 시점 후 7일 동일 상품 구매
+-- 출처: sql/05_purchase_journey_analysis.sql, 쿼리 본문 재사용.
+-- 목적/연결: 노트북 §4, 05 실험 설계 문서.
+-- grain: user_id × product_id를 일자별 집계. 분모: cart+24시간 미구매 및 이후 7일 완전 관측 조합.
 -- cart 다중 purchase 경계는 pj_cart_boundary_raw_next_purchase 결과로 교체한다.
 WITH raw_corrections AS (
     SELECT
@@ -727,7 +916,14 @@ FROM eligible_users
 GROUP BY DATE(eligibility_at)
 ORDER BY 실험적격일;
 
--- name: pj_experiment_user_cluster | 실험 적격 조합의 사용자별 묶임 분포
+-- ==================================================
+-- 7. 가설 2: 사용자 내 군집 보정의 기존 입력 집계
+-- ==================================================
+
+-- name: pj_experiment_user_cluster | 기존 05의 사용자별 적격 조합·구매 분포
+-- 출처: sql/05_purchase_journey_analysis.sql, 쿼리 본문 재사용.
+-- 목적/연결: 노트북 §4 실험 설계의 ICC·설계효과 입력.
+-- grain: 적격 사용자별 보유 조합 수·구매 조합 수 분포. 분모: 기준점 후 7일 완전 관측 적격 조합.
 -- 적격 집합 정의는 pj_experiment_baseline과 완전히 같고 마지막 집계만 다르다.
 -- 사용자 한 명이 몇 개의 적격 조합을 갖고 그중 몇 개를 구매했는지의 분포를 돌려준다.
 -- 이 분포만으로 급내상관(ICC)과 설계효과를 계산할 수 있어 사용자 행을 모두 내리지 않는다.

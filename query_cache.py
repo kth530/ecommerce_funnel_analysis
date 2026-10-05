@@ -33,8 +33,22 @@ def load_queries(path: str | Path) -> dict[str, str]:
     }
 
 
+def normalized_query_hash(query: str) -> str:
+    """Hash SQL after removing full-line comments and blank lines only.
+
+    SQL code lines, including inline comments and string literals, remain exact.
+    This is intentionally stricter than general SQL formatting normalization.
+    """
+    lines = (
+        line.rstrip()
+        for line in query.splitlines()
+        if line.strip() and not line.lstrip().startswith("--")
+    )
+    return _sha256_bytes("\n".join(lines).encode("utf-8"))
+
+
 def find_project_root(start: str | Path | None = None) -> Path:
-    """Find the project root from either the root or ``notebooks/`` cwd."""
+    """Find the project root from a project or final-analysis path."""
     origin = Path(start or Path.cwd()).resolve()
     for candidate in (origin, *origin.parents):
         if (candidate / "cache_context.json").is_file() and (candidate / "sql").is_dir():
@@ -215,8 +229,10 @@ class QueryCache:
         """Return the full cache fingerprint for a named query invocation."""
         return self._fingerprint_details(name, read_sql_kwargs)[0]
 
-    def _paths(self, name: str, fingerprint: str) -> tuple[Path, Path]:
-        directory = self.cache_dir / self.sql_file.stem / name
+    def _paths(
+        self, name: str, fingerprint: str, *, namespace: str | None = None
+    ) -> tuple[Path, Path]:
+        directory = self.cache_dir / (namespace or self.sql_file.stem) / name
         return (
             directory / f"{fingerprint}.parquet",
             directory / f"{fingerprint}.meta.json",
@@ -231,8 +247,13 @@ class QueryCache:
         name: str,
         fingerprint: str,
         details: Mapping[str, Any],
+        *,
+        namespace: str | None = None,
+        metadata_expectations: Mapping[str, Any] | None = None,
     ) -> tuple[pd.DataFrame | None, str]:
-        parquet_path, metadata_path = self._paths(name, fingerprint)
+        parquet_path, metadata_path = self._paths(
+            name, fingerprint, namespace=namespace
+        )
         if not parquet_path.exists() or not metadata_path.exists():
             legacy_path = self.cache_dir / f"{name}.parquet"
             if legacy_path.exists():
@@ -246,6 +267,11 @@ class QueryCache:
             return None, "metadata fingerprint 불일치"
         if metadata.get("fingerprint_components") != dict(details):
             return None, "metadata provenance 불일치"
+        if metadata_expectations and any(
+            metadata.get(key) != value
+            for key, value in metadata_expectations.items()
+        ):
+            return None, "metadata 출처 표시 불일치"
         try:
             if metadata.get("parquet_sha256") != _sha256_file(parquet_path):
                 return None, "parquet content hash 불일치"
@@ -267,6 +293,81 @@ class QueryCache:
         if frame is None:
             raise CacheUnavailableError(
                 f"[{name}] 검증된 cache 사용 불가 ({fingerprint[:12]}): {reason}"
+            )
+        self._log(f"[{name}] cache HIT {fingerprint[:12]} · {len(frame):,}행")
+        return frame
+
+    def read_compatible_cached(
+        self,
+        name: str,
+        *,
+        compatibility_file: str | Path,
+        **read_sql_kwargs: Any,
+    ) -> pd.DataFrame:
+        """Read a validated existing cache using final SQL and pinned provenance.
+
+        The compatibility manifest records the old cache fingerprint components,
+        not paths to old SQL files. No SQL is executed and no cache is written.
+        """
+        if name not in self.queries:
+            raise KeyError(f"named query 없음: {name}")
+        manifest = json.loads(Path(compatibility_file).read_text(encoding="utf-8"))
+        if manifest.get("version") != 1:
+            raise CacheUnavailableError("cache 호환 manifest 버전 불일치")
+        if manifest.get("dataset_version") != self.context["dataset_version"]:
+            raise CacheUnavailableError("cache 호환 manifest 데이터 버전 불일치")
+        entries = manifest.get("queries", {}).get(self.sql_file.name, {})
+        entry = entries.get(name)
+        if not isinstance(entry, dict):
+            raise CacheUnavailableError(f"[{name}] cache 호환 정보 없음: 재생성 필요")
+        if normalized_query_hash(self.queries[name]) != entry["normalized_query_sha256"]:
+            raise CacheUnavailableError(
+                f"[{name}] sql 쿼리 본문 변경: 재생성 필요"
+            )
+        if entry["requires_mart_definitions"]:
+            mart_queries = load_queries(
+                self.project_root / "sql" / "mart_overview.sql"
+            )
+            for mart_name, expected_hash in manifest["mart_definition_hashes"].items():
+                if normalized_query_hash(mart_queries[mart_name]) != expected_hash:
+                    raise CacheUnavailableError(
+                        f"[{name}] {mart_name} 마트 정의 변경: 재생성 필요"
+                    )
+        namespace = entry["cache_namespace"]
+        if not re.fullmatch(r"[A-Za-z0-9_]+", namespace):
+            raise ValueError(f"[{name}] 잘못된 cache namespace")
+        kwargs = dict(read_sql_kwargs)
+        params = kwargs.pop("params", None)
+        details = {
+            "cache_contract_version": self.context["cache_contract_version"],
+            "query_name": name,
+            "query_sql_sha256": entry["cache_query_sql_sha256"],
+            "sql_file_sha256": entry["cache_sql_file_sha256"],
+            "upstream_sql_sha256": entry["cache_upstream_sql_sha256"],
+            "dataset_version": self.context["dataset_version"],
+            "parameter_sha256": canonical_hash(params),
+            "read_sql_kwargs_sha256": canonical_hash(kwargs),
+            "db_dialect": self.db_dialect,
+            "source_hash": self.source_hash,
+        }
+        fingerprint = canonical_hash(details)
+        frame, reason = self._read_validated(
+            name,
+            fingerprint,
+            details,
+            namespace=namespace,
+            metadata_expectations={
+                "sql_file": entry["cache_sql_file_label"],
+                "dataset": self.context["dataset"],
+                "period_start": self.context["period_start"],
+                "period_end": self.context["period_end"],
+                "raw_event_rows": self.context["raw_event_rows"],
+            },
+        )
+        if frame is None:
+            raise CacheUnavailableError(
+                f"[{name}] 검증된 cache 재사용 불가 ({fingerprint[:12]}): "
+                f"{reason}; 재생성 필요"
             )
         self._log(f"[{name}] cache HIT {fingerprint[:12]} · {len(frame):,}행")
         return frame

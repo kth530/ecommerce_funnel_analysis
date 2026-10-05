@@ -2,9 +2,9 @@
 
 - 워크북(`이커머스 퍼널 분석 대시보드.twbx`)은 이전 분석 시절의 컬럼명을 필드로 바인딩하고 있다.
   현재 `export_tableau.py`가 내보내는 새 컬럼명과는 이름이 달라, 그대로 두면
-  Tableau가 모든 필드를 누락으로 표시한다. 이 스크립트는 **같은 05 캐시**에서
+  Tableau가 모든 필드를 누락으로 표시한다. 이 스크립트는 **호환 검증된 캐시**에서
   워크북이 기대하는 이름·구조로 다시 내보내 디자인을 유지한 채 데이터만 교체한다.
-- 지표 정의는 05 노트북과 동일하며 여기서 새로 정의하지 않는다.
+- 지표 정의는 검증된 기존 집계와 동일하며 여기서 새로 정의하지 않는다.
 - 현재 분석에 존재하지 않는 값(`revenue`, 구매차수 분해)은 임의로 만들지 않고
   아래 주석에 명시한 방식으로만 채운다.
 
@@ -35,26 +35,26 @@ OBSERVATION_LABEL = f"{ex.OBSERVATION_DAYS}일"
 
 
 def _load(cache: QueryCache):
-    """export_tableau.main과 같은 순서로 검증된 캐시만 읽는다."""
-    purchase_cohort = cache.read_cached("pj_30day_purchase_cohort")
-    mart_paths = cache.read_cached("pj_representative_purchase_mart")
+    """export_tableau.main과 같은 순서로 호환 검증된 캐시만 읽는다."""
+    purchase_cohort = ex.read_final_cached(cache, "pj_30day_purchase_cohort")
+    mart_paths = ex.read_final_cached(cache, "pj_representative_purchase_mart")
     raw_params, _ = ex._build_boundary_params(mart_paths)
-    raw_paths = cache.read_cached("pj_boundary_raw_paths", params=raw_params)
+    raw_paths = ex.read_final_cached(cache, "pj_boundary_raw_paths", params=raw_params)
 
-    cart_boundaries = cache.read_cached("pj_cart_purchase_boundaries")
+    cart_boundaries = ex.read_final_cached(cache, "pj_cart_purchase_boundaries")
     cart_raw_params, _ = ex._build_cart_boundary_params(cart_boundaries)
-    cart_raw_corrections = cache.read_cached(
-        "pj_cart_boundary_raw_next_purchase", params=cart_raw_params
+    cart_raw_corrections = ex.read_final_cached(
+        cache, "pj_cart_boundary_raw_next_purchase", params=cart_raw_params
     )
     correction_params = ex._build_cart_correction_params(cart_raw_corrections)
-    cart_rates = cache.read_cached(
-        "pj_cart_purchase_next_24h_rate", params=correction_params
+    cart_rates = ex.read_final_cached(
+        cache, "pj_cart_purchase_next_24h_rate", params=correction_params
     )
-    experiment_daily = cache.read_cached(
-        "pj_experiment_baseline", params=correction_params
+    experiment_daily = ex.read_final_cached(
+        cache, "pj_experiment_baseline", params=correction_params
     )
-    cluster_dist = cache.read_cached(
-        "pj_experiment_user_cluster", params=correction_params
+    cluster_dist = ex.read_final_cached(
+        cache, "pj_experiment_user_cluster", params=correction_params
     )
     return purchase_cohort, mart_paths, raw_paths, cart_rates, experiment_daily, cluster_dist
 
@@ -86,7 +86,7 @@ def build_purchase_path(path_summary) -> pd.DataFrame:
     """워크북 purchase_path 계약(5열).
 
     `구매차수`는 현재 분석에 없는 차원이라 옛 CSV의 '전체' 행만 내보낸다.
-    `revenue`는 05 쿼리가 집계하지 않으므로 값을 만들지 않고 결측으로 둔다.
+    `revenue`는 현재 집계 쿼리가 제공하지 않으므로 값을 만들지 않고 결측으로 둔다.
     """
     frame = pd.DataFrame({
         "구매차수": "전체",
@@ -131,7 +131,7 @@ def build_experiment_design(experiment_daily, cart_rates, cluster_dist) -> pd.Da
     # 사람 수를 보여주도록 쌍을 사용자 수로 환산해 `..._명` 열에 넣는다. 같은 사용자가
     # 다른 날 다시 적격이 될 수 있어 일자 기준 비율을 쓴다(사용자 수를 크게 잡는 쪽).
     eligible_user_days = int(experiment_daily["실험적격_사용자수"].sum())
-    # 표본·기간은 05 노트북과 같은 설계효과를 반영한다.
+    # 표본·기간은 검증된 기존 설계효과를 반영한다.
     _icc, _adjusted, design_effect = ex.cluster_design_effect(cluster_dist)
 
     def to_users(pairs: int) -> int:
@@ -168,7 +168,7 @@ def build_experiment_design(experiment_daily, cart_rates, cluster_dist) -> pd.Da
 
 
 def build_cart_cumulative(cart_rates) -> pd.DataFrame:
-    """대시보드 2의 누적 곡선용. 05 노트북 §4의 누적 구매율과 같은 정의다.
+    """대시보드 2의 누적 곡선용. 검증된 기존 누적 구매율과 같은 정의다.
 
     구간별 구매율은 구간마다 분모가 달라 더할 수 없으므로, 최초 담기 사용자 전체를
     고정 분모로 둔 누적값을 쓴다. 담기 시점(0시간·0%)을 첫 행으로 넣어 첫 24시간의
@@ -195,11 +195,7 @@ def build_cart_cumulative(cart_rates) -> pd.DataFrame:
 def main(output_dir: str | None = None) -> None:
     out = Path(output_dir or ROOT / "tableau" / "_workbook_compat").resolve()
     out.mkdir(parents=True, exist_ok=True)
-    cache = QueryCache(
-        engine=ex.build_engine(),
-        sql_file=ROOT / "sql" / "05_purchase_journey_analysis.sql",
-        upstream_sql_files=(ROOT / "sql" / "02_preprocessing_mart.sql",),
-    )
+    cache = ex.build_final_cache()
     cohort, mart_paths, raw_paths, cart_rates, experiment_daily, cluster_dist = _load(cache)
     path_summary, eligible_n, purchase_n = ex._path_summary(cohort, mart_paths, raw_paths)
 

@@ -1,7 +1,7 @@
-"""검증된 05 캐시에서 Tableau용 집계 CSV를 생성한다.
+"""검증된 기존 캐시에서 Tableau용 집계 CSV를 생성한다.
 
-- DB를 조회하지 않고 ``QueryCache.read_cached``만 사용한다.
-- parameterized query의 JSON 파라미터는 05 노트북과 같은 순서·형식으로 만든다.
+- DB를 조회하지 않고 ``QueryCache.read_compatible_cached``만 사용한다.
+- parameterized query의 JSON 파라미터는 검증된 캐시와 같은 순서·형식으로 만든다.
 - 캐시 fingerprint, provenance, parquet, schema, content hash가 하나라도 다르면
   ``CacheUnavailableError``로 중단하며 DB로 대체하지 않는다.
 
@@ -23,6 +23,8 @@ from dotenv import load_dotenv
 from sqlalchemy import URL, create_engine
 
 ROOT = Path(__file__).resolve().parent.parent
+FINAL_SQL_FILE = ROOT / "sql" / "eda.sql"
+COMPATIBILITY_FILE = ROOT / "sql" / "cache_compatibility.json"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -38,7 +40,7 @@ ALPHA = 0.05
 POWER = 0.80
 RELATIVE_MDE = 0.05
 
-# 05 노트북의 PATH_LABELS와 문자열이 같아야 한다. 한쪽만 바꾸면 노트북과 대시보드의 경로명이 갈린다.
+# 기존 Tableau 출력의 경로명 계약이다. 변경 시 워크북 필드와 표시명을 함께 확인한다.
 PATH_LABELS = {
     1: "같은 세션 내 조회→담기→첫 구매",
     2: "같은 세션 내 담기→첫 구매 (앞선 조회 미확인)",
@@ -70,6 +72,22 @@ def build_engine():
             database=os.getenv("DB_NAME"),
             query={"charset": "utf8mb4"},
         )
+    )
+
+
+def build_final_cache(cache_dir: str | None = None) -> QueryCache:
+    return QueryCache(
+        engine=build_engine(),
+        sql_file=FINAL_SQL_FILE,
+        upstream_sql_files=(),
+        cache_dir=cache_dir,
+        context_file=ROOT / "cache_context.json",
+    )
+
+
+def read_final_cached(cache: QueryCache, name: str, **kwargs) -> pd.DataFrame:
+    return cache.read_compatible_cached(
+        name, compatibility_file=COMPATIBILITY_FILE, **kwargs
     )
 
 
@@ -426,19 +444,14 @@ def _validate_regression(
 def main(cache_dir: str | None = None, output_dir: str | None = None) -> None:
     out = Path(output_dir or os.getenv("TABLEAU_OUTPUT_DIR", ROOT / "tableau")).resolve()
     out.mkdir(parents=True, exist_ok=True)
-    cache = QueryCache(
-        engine=build_engine(),
-        sql_file=ROOT / "sql" / "05_purchase_journey_analysis.sql",
-        upstream_sql_files=(ROOT / "sql" / "02_preprocessing_mart.sql",),
-        cache_dir=cache_dir,
-    )
+    cache = build_final_cache(cache_dir)
 
-    # read_cached는 검증된 캐시가 없으면 예외를 발생시키며 DB를 조회하지 않는다.
-    purchase_cohort = cache.read_cached("pj_30day_purchase_cohort")
-    mart_paths = cache.read_cached("pj_representative_purchase_mart")
+    # 호환 검증 캐시가 없으면 예외를 발생시키며 DB를 조회하지 않는다.
+    purchase_cohort = read_final_cached(cache, "pj_30day_purchase_cohort")
+    mart_paths = read_final_cached(cache, "pj_representative_purchase_mart")
 
     raw_params, boundary_keys = _build_boundary_params(mart_paths)
-    raw_paths = cache.read_cached("pj_boundary_raw_paths", params=raw_params)
+    raw_paths = read_final_cached(cache, "pj_boundary_raw_paths", params=raw_params)
     raw_key_frame = raw_paths[
         ["user_id", "product_id", "anchor_view_at", "boundary_type"]
     ].copy()
@@ -448,9 +461,10 @@ def main(cache_dir: str | None = None, output_dir: str | None = None) -> None:
     ):
         raise ValueError("대표 구매 raw 경계 캐시의 키가 후보 키와 일치하지 않습니다.")
 
-    cart_boundaries = cache.read_cached("pj_cart_purchase_boundaries")
+    cart_boundaries = read_final_cached(cache, "pj_cart_purchase_boundaries")
     cart_raw_params, cart_boundary_keys = _build_cart_boundary_params(cart_boundaries)
-    cart_raw_corrections = cache.read_cached(
+    cart_raw_corrections = read_final_cached(
+        cache,
         "pj_cart_boundary_raw_next_purchase",
         params=cart_raw_params,
     )
@@ -466,11 +480,13 @@ def main(cache_dir: str | None = None, output_dir: str | None = None) -> None:
         raise ValueError("cart raw 보완 캐시의 키가 후보 키와 일치하지 않습니다.")
 
     correction_params = _build_cart_correction_params(cart_raw_corrections)
-    cart_rate_cache = cache.read_cached(
+    cart_rate_cache = read_final_cached(
+        cache,
         "pj_cart_purchase_next_24h_rate",
         params=correction_params,
     )
-    experiment_daily = cache.read_cached(
+    experiment_daily = read_final_cached(
+        cache,
         "pj_experiment_baseline",
         params=correction_params,
     )
@@ -491,7 +507,8 @@ def main(cache_dir: str | None = None, output_dir: str | None = None) -> None:
         "30일적격대비비율_pct",
     ]].round(3)
     cart_rates = _cart_purchase_rate(cart_rate_cache)
-    cluster_dist = cache.read_cached(
+    cluster_dist = read_final_cached(
+        cache,
         "pj_experiment_user_cluster",
         params=correction_params,
     )
@@ -512,7 +529,7 @@ def main(cache_dir: str | None = None, output_dir: str | None = None) -> None:
         if obsolete.is_file():
             obsolete.unlink()
 
-    print("검증된 05 캐시 HIT: 7/7 (DB 조회 0건)")
+    print("검증된 기존 캐시 HIT: 8/8 (DB 조회 0건)")
     for filename in OUTPUT_FILES:
         frame = outputs[filename]
         print(f"- {filename}: {len(frame):,}행 × {len(frame.columns):,}열")
