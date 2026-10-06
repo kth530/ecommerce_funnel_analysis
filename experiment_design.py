@@ -66,6 +66,44 @@ def two_proportion_sample_size(
     return target_rate, users_per_group
 
 
+def cluster_design_effect(cluster_distribution: pd.DataFrame) -> tuple[float, float, float]:
+    """Return ICC, unequal-cluster adjusted size, and the exact design effect.
+
+    The distribution is grouped by (eligible pairs per user, purchased pairs per
+    user); ``사용자수`` is the frequency of each group. The adjusted size is the
+    value used in the existing notebook's one-way ANOVA ICC calculation, rather
+    than a rounded display average.
+    """
+    required = {"사용자수", "보유_사용자상품수", "구매_사용자상품수"}
+    if not isinstance(cluster_distribution, pd.DataFrame) or not required.issubset(cluster_distribution):
+        raise ValueError(f"cluster_distribution에는 {sorted(required)} 열이 필요합니다.")
+    users = pd.to_numeric(cluster_distribution["사용자수"], errors="raise")
+    sizes = pd.to_numeric(cluster_distribution["보유_사용자상품수"], errors="raise")
+    buys = pd.to_numeric(
+        cluster_distribution["구매_사용자상품수"].fillna(0), errors="raise"
+    )
+    if (users.isna().any() or sizes.isna().any() or buys.isna().any()
+            or not (users > 0).all() or not (sizes > 0).all()
+            or not ((0 <= buys) & (buys <= sizes)).all()
+            or not ((users % 1 == 0) & (sizes % 1 == 0) & (buys % 1 == 0)).all()):
+        raise ValueError("사용자별 조합 분포에는 유효한 양의 정수 빈도·크기와 구매 수가 필요합니다.")
+
+    user_n = int(users.sum())
+    pair_n = int((users * sizes).sum())
+    if user_n <= 1 or pair_n <= user_n:
+        raise ValueError("ICC 계산에는 사용자 2명 이상과 사용자당 복수 조합이 필요합니다.")
+    grand_rate = float((users * buys).sum() / pair_n)
+    user_rate = buys / sizes
+    ms_between = float((users * sizes * (user_rate - grand_rate) ** 2).sum()) / (user_n - 1)
+    ms_within = float((users * sizes * user_rate * (1 - user_rate)).sum()) / (pair_n - user_n)
+    adjusted_size = (pair_n - float((users * sizes ** 2).sum()) / pair_n) / (user_n - 1)
+    denominator = ms_between + (adjusted_size - 1) * ms_within
+    if denominator <= 0:
+        raise ValueError("ICC 분모가 0 이하입니다.")
+    icc = max(0.0, (ms_between - ms_within) / denominator)
+    return icc, adjusted_size, 1 + (adjusted_size - 1) * icc
+
+
 def _complete_daily_series(
     daily_eligible_users: pd.Series,
     *,
@@ -111,12 +149,13 @@ def calculate_experiment_design(
     tracking_days: int = 7,
     rolling_window: int = 28,
     conservative_quantile: float = 0.25,
+    cluster_distribution: pd.DataFrame | None = None,
 ) -> ExperimentDesignResult:
     """Calculate the canonical 1:1 experiment designs without display rounding.
 
-    `daily_eligible_users`의 단위는 호출자가 정한다. 05 분석은 (사용자, 상품) 쌍을
-    넘기므로 반환되는 필요 표본도 쌍 수다. 배정은 사용자 단위이므로, 표본을 사용자
-    수로 환산하는 일은 호출자가 쌍/사용자 비율로 수행한다.
+    `daily_eligible_users`가 (사용자, 상품) 쌍이면 필요 표본도 쌍 수다.
+    `cluster_distribution`을 넘기면 사용자별 복수 쌍의 ICC와 설계효과를
+    반올림 없이 적용한다. 기존 표본 열은 독립 가정 값으로 유지한다.
     """
     baseline_rate = _validate_probability(baseline_rate, "baseline_rate")
     alpha = _validate_probability(alpha, "alpha")
@@ -145,6 +184,19 @@ def calculate_experiment_design(
     if average_daily <= 0 or conservative_daily <= 0:
         raise ValueError("모집 기간 계산에 사용할 일별 적격 사용자 수는 0보다 커야 합니다.")
 
+    if cluster_distribution is None:
+        icc = average_size = adjusted_size = design_effect = float("nan")
+    else:
+        icc, adjusted_size, design_effect = cluster_design_effect(cluster_distribution)
+        cluster_users = int(pd.to_numeric(cluster_distribution["사용자수"]).sum())
+        cluster_pairs = int((
+            pd.to_numeric(cluster_distribution["사용자수"])
+            * pd.to_numeric(cluster_distribution["보유_사용자상품수"])
+        ).sum())
+        average_size = cluster_pairs / cluster_users
+        if cluster_pairs != int(daily.sum()):
+            raise ValueError("군집 분포의 적격 조합 수와 일별 적격 조합 수가 다릅니다.")
+
     rows = []
     for relative_mde in relative_mdes:
         target_rate, users_per_group = two_proportion_sample_size(
@@ -154,8 +206,13 @@ def calculate_experiment_design(
             power=power,
         )
         total_users = users_per_group * 2
-        recruitment_days = math.ceil(total_users / average_daily)
-        conservative_recruitment_days = math.ceil(total_users / conservative_daily)
+        corrected_total = (
+            math.ceil(total_users * design_effect)
+            if cluster_distribution is not None else pd.NA
+        )
+        period_sample = corrected_total if cluster_distribution is not None else total_users
+        recruitment_days = math.ceil(period_sample / average_daily)
+        conservative_recruitment_days = math.ceil(period_sample / conservative_daily)
         rows.append({
             "상대_MDE": f"+{relative_mde * 100:.0f}%",
             "기준구매율_pct": baseline_rate * 100,
@@ -163,6 +220,13 @@ def calculate_experiment_design(
             "절대_MDE_pctp": (target_rate - baseline_rate) * 100,
             "군별_필요표본수": users_per_group,
             "전체_필요표본수": total_users,
+            "독립가정_군별표본": users_per_group,
+            "독립가정_전체표본": total_users,
+            "ICC": icc,
+            "평균_클러스터크기": average_size,
+            "설계_보정_클러스터크기": adjusted_size,
+            "설계효과": design_effect,
+            "군집보정_전체표본": corrected_total,
             "예상_모집일수": recruitment_days,
             "7일추적포함_최소일수": recruitment_days + tracking_days,
             "보수적_예상모집일수": conservative_recruitment_days,

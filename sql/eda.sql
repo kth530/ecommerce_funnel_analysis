@@ -149,11 +149,12 @@ GROUP BY 관측세션구간
 ORDER BY MIN(관측세션수)
 
 -- ==================================================
--- 4. 가설 1: 30일 완전 관측과 대표 첫 구매 네 경로
+-- 4. 가설 1: 30일 완전 관측과 대표 첫 구매 경로
 -- ==================================================
 
 -- 대표 첫 구매 분모는 30일 적격 사용자×상품 중 실제 대표 첫 구매가 확인된 조합.
--- 30.361%는 그중 한 세션 조회→담기→구매 완결, 69.639%는 한 세션 3단계 미완결.
+-- 30.361%는 그중 한 세션 View → Cart → Purchase 경로에 해당한다.
+-- 69.639%는 해당 경로로 포착되지 않은 대표 첫 구매다.
 -- 69.639%를 다른 세션 구매율로 읽지 않는다. raw 경계는 아래 제한 키로만 보완한다.
 
 -- name: pj_30day_purchase_cohort | 30일 완전 관측 및 마트 확정 대표 첫 구매 집계
@@ -220,7 +221,7 @@ SELECT
         AS 대표구매시각_raw경계후보_사용자상품수
 FROM purchase_context;
 
--- name: pj_representative_purchase_mart | 대표 첫 구매 마트 확정 네 경로와 raw 경계 키
+-- name: pj_representative_purchase_mart | 대표 첫 구매 마트 확정 4경로와 raw 경계 키
 -- 출처: sql/05_purchase_journey_analysis.sql, 쿼리 본문 재사용.
 -- 목적/연결: 노트북 §3 대표 첫 구매.
 -- grain: user_id × product_id. 분모: 30일 완전 관측 적격군 또는 그중 대표 첫 구매; 최종 분모는 노트북 경계 보정 참조.
@@ -565,6 +566,134 @@ SELECT
     (SELECT COUNT(*) FROM boundary_raw_events) AS raw_event_count
 FROM action_flags
 ORDER BY user_id, product_id, boundary_type;
+
+-- name: pj_no_cart_mart_view_split | Cart 미확인 마트 확정 경로의 구매 세션 View 확인
+-- 입력은 pj_representative_purchase_mart의 마트 확정 path_order=4 키로 제한한다.
+-- 첫 View와 대표 첫 구매의 strict 시각 순서로 4(View → Purchase) 또는
+-- 5(Purchase only)를 부여한다. 기존 4경로 SQL과 캐시는 변경하지 않는다.
+WITH selected_keys AS (
+    SELECT
+        selected.row_id,
+        selected.user_id,
+        selected.product_id,
+        selected.anchor_view_at
+    FROM JSON_TABLE(
+        :no_cart_mart_json,
+        '$[*]' COLUMNS (
+            row_id FOR ORDINALITY,
+            user_id BIGINT PATH '$.user_id',
+            product_id BIGINT PATH '$.product_id',
+            anchor_view_at DATETIME PATH '$.anchor_view_at'
+        )
+    ) selected
+), purchase_candidates AS (
+    SELECT
+        selected.row_id,
+        journey.user_session,
+        journey.first_purchase_at,
+        journey.first_view_at,
+        ROW_NUMBER() OVER (
+            PARTITION BY selected.row_id
+            ORDER BY journey.first_purchase_at, journey.user_session
+        ) AS purchase_order
+    FROM selected_keys selected
+    JOIN mart_user_product_session journey
+      ON selected.user_id = journey.user_id
+     AND selected.product_id = journey.product_id
+     AND journey.first_purchase_at > selected.anchor_view_at
+     AND journey.first_purchase_at
+            <= selected.anchor_view_at + INTERVAL 30 DAY
+)
+SELECT
+    selected.user_id,
+    selected.product_id,
+    selected.anchor_view_at,
+    purchase.user_session AS representative_session,
+    purchase.first_purchase_at AS representative_purchase_at,
+    purchase.first_view_at AS current_session_first_view_at,
+    CASE
+        WHEN purchase.user_session IS NULL THEN NULL
+        WHEN purchase.first_view_at < purchase.first_purchase_at THEN 4
+        ELSE 5
+    END AS detail_path_order
+FROM selected_keys selected
+LEFT JOIN purchase_candidates purchase
+  ON selected.row_id = purchase.row_id
+ AND purchase.purchase_order = 1
+ORDER BY selected.row_id;
+
+-- name: pj_no_cart_raw_view_split | Cart 미확인 raw 경계 경로의 구매 세션 View 확인
+-- 입력은 pj_boundary_raw_paths의 적격 path_order=4 키 61개로 제한한다.
+-- raw 경계와 동일하게 유효 가격 및 anchor 이후 첫 purchase 이전 View를 확인한다.
+WITH selected_keys AS (
+    SELECT
+        selected.row_id,
+        selected.user_id,
+        selected.product_id,
+        selected.anchor_view_at,
+        selected.representative_purchase_at
+    FROM JSON_TABLE(
+        :no_cart_raw_json,
+        '$[*]' COLUMNS (
+            row_id FOR ORDINALITY,
+            user_id BIGINT PATH '$.user_id',
+            product_id BIGINT PATH '$.product_id',
+            anchor_view_at DATETIME PATH '$.anchor_view_at',
+            representative_purchase_at DATETIME
+                PATH '$.representative_purchase_at'
+        )
+    ) selected
+), purchase_sessions AS (
+    SELECT
+        selected.row_id,
+        MIN(event.user_session) AS representative_session
+    FROM selected_keys selected
+    JOIN mart_user_product_session journey
+      ON selected.user_id = journey.user_id
+     AND selected.product_id = journey.product_id
+     AND journey.session_start <= selected.representative_purchase_at
+     AND journey.session_end >= selected.representative_purchase_at
+    JOIN events event FORCE INDEX (idx_repeat_events)
+      ON journey.user_session = event.user_session
+     AND selected.product_id = event.product_id
+     AND event.event_time = selected.representative_purchase_at
+     AND event.event_type = 'purchase'
+     AND event.price >= 0
+    GROUP BY selected.row_id
+), current_session_view AS (
+    SELECT
+        selected.row_id,
+        MIN(event.event_time) AS current_session_first_view_at
+    FROM selected_keys selected
+    JOIN purchase_sessions purchase
+      ON selected.row_id = purchase.row_id
+    LEFT JOIN events event FORCE INDEX (idx_repeat_events)
+      ON purchase.representative_session = event.user_session
+     AND selected.product_id = event.product_id
+     AND event.event_type = 'view'
+     AND event.price >= 0
+     AND event.event_time >= selected.anchor_view_at
+     AND event.event_time < selected.representative_purchase_at
+    GROUP BY selected.row_id
+)
+SELECT
+    selected.user_id,
+    selected.product_id,
+    selected.anchor_view_at,
+    purchase.representative_session,
+    selected.representative_purchase_at,
+    current_view.current_session_first_view_at,
+    CASE
+        WHEN purchase.representative_session IS NULL THEN NULL
+        WHEN current_view.current_session_first_view_at IS NOT NULL THEN 4
+        ELSE 5
+    END AS detail_path_order
+FROM selected_keys selected
+LEFT JOIN purchase_sessions purchase
+  ON selected.row_id = purchase.row_id
+LEFT JOIN current_session_view current_view
+  ON selected.row_id = current_view.row_id
+ORDER BY selected.row_id;
 
 -- ==================================================
 -- 5. 가설 2: 최초 cart 이후 조건부 구매 시간
