@@ -2,13 +2,6 @@
 
 공개 [코스메틱 이커머스 이벤트 로그](https://www.kaggle.com/datasets/mkechinov/ecommerce-events-history-in-cosmetics-shop)를 활용한 포트폴리오 프로젝트다. 그로스팀의 구매 흐름 점검 요청은 가상 업무 시나리오이며, 실제 캠페인 성과를 분석한 것은 아니다.
 
-**기술 스택**
-
-![Python](https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white)
-![MySQL](https://img.shields.io/badge/MySQL-4479A1?style=flat-square&logo=mysql&logoColor=white)
-![Jupyter](https://img.shields.io/badge/Jupyter-F37626?style=flat-square&logo=jupyter&logoColor=white)
-![Tableau](https://img.shields.io/badge/Tableau-E97627?style=flat-square&logo=tableau&logoColor=white)
-
 > 같은 상품을 여러 번 방문해 본다면, 한 세션의 View → Cart → Purchase만으로 그 구매를 얼마나 설명할 수 있을까?
 
 [분석 스토리(노션)](https://app.notion.com/p/3daec47c108581c092f0c430157e796a) · [최종 대시보드(Tableau Public)](https://public.tableau.com/app/profile/thkim530/viz/_17912787470560/AB_1#1)
@@ -94,3 +87,12 @@ Cart 이후 구매 시간은 첫 구매 경로와 별도로 구성한 집단에�
 | [SQL 기준본](sql/README.md) · [캐시 재현 조건](docs/cache_contract.md) | 집계 정의와 검증된 결과 재사용 방식 |
 
 최종 노트북은 검증된 집계 캐시를 읽는다. 원본 CSV, MySQL 접속 정보와 대용량 캐시는 저장소에 포함하지 않는다.
+
+---
+
+## 6. 기술 스택
+
+![Python](https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white)
+![MySQL](https://img.shields.io/badge/MySQL-4479A1?style=flat-square&logo=mysql&logoColor=white)
+![Jupyter](https://img.shields.io/badge/Jupyter-F37626?style=flat-square&logo=jupyter&logoColor=white)
+![Tableau](https://img.shields.io/badge/Tableau-E97627?style=flat-square&logo=tableau&logoColor=white)
