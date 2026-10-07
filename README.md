@@ -2,7 +2,12 @@
 
 공개 [코스메틱 이커머스 이벤트 로그](https://www.kaggle.com/datasets/mkechinov/ecommerce-events-history-in-cosmetics-shop)를 활용한 포트폴리오 프로젝트다. 그로스팀의 구매 흐름 점검 요청은 가상 업무 시나리오이며, 실제 캠페인 성과를 분석한 것은 아니다.
 
-**기술 스택:** MySQL · Python · Tableau · Jupyter Notebook
+**기술 스택**
+
+![Python](https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white)
+![MySQL](https://img.shields.io/badge/MySQL-4479A1?style=flat-square&logo=mysql&logoColor=white)
+![Jupyter](https://img.shields.io/badge/Jupyter-F37626?style=flat-square&logo=jupyter&logoColor=white)
+![Tableau](https://img.shields.io/badge/Tableau-E97627?style=flat-square&logo=tableau&logoColor=white)
 
 > 같은 상품을 여러 번 방문해 본다면, 한 세션의 View → Cart → Purchase만으로 그 구매를 얼마나 설명할 수 있을까?
 
