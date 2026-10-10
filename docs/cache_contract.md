@@ -1,12 +1,13 @@
 # Query cache contract
 
-분석 notebook 03-05의 parquet cache는 query name만으로 재사용하지 않는다. 현재 실행 조건에서 계산한 fingerprint가 일치하고 metadata 및 parquet 무결성 검증을 통과한 결과만 cache hit로 인정한다.
+분석 notebook 02-04의 parquet cache는 query name만으로 재사용하지 않는다. 현재 실행 조건에서 계산한 fingerprint가 일치하고 metadata 및 parquet 무결성 검증을 통과한 결과만 cache hit로 인정한다.
 
 ## Notebook별 cache 정책
 
-- Notebook 03-05는 `QueryCache`를 사용해 content-addressed parquet와 provenance metadata를 함께 검증한다.
-- `tableau/export_tableau.py`와 `tableau/export_workbook_compat.py`는 현재 조건과 일치하는 검증된 Notebook 05 cache만 읽으며 DB 재조회나 legacy fallback을 수행하지 않는다.
-- Notebook 01도 `QueryCache`를 사용한다. `cache/<query-name>.parquet` 형식의 name-only cache 파일 13개가 저장소에 남아 있으나 현재 어느 notebook도 읽지 않는 과거 실행의 잔존물이다.
+- Notebook 02-04는 `QueryCache`를 사용해 content-addressed parquet와 provenance metadata를 함께 검증한다. `notebooks/01_problem_hypothesis.md`는 문서라 cache를 쓰지 않는다.
+- `tableau/export_dashboard_source.py`는 현재 조건과 일치하는 검증된 `sql/eda.sql` cache만 읽으며 DB 재조회나 legacy fallback을 수행하지 않는다. `export_tableau.py`와 `export_workbook_compat.py`는 CSV를 직접 쓰지 않고 이 스크립트가 계산 로직으로 import 한다.
+- `cache/<query-name>.parquet` 형식의 name-only cache 파일 13개가 저장소에 남아 있으나 현재 어느 notebook도 읽지 않는 과거 실행의 잔존물이다.
+- `cache/` 하위 폴더 이름은 2026-10-05 구조 개편 전 notebook 번호(`01_raw_eda`, `05_purchase_journey_analysis` 등)를 그대로 쓴다. `sql/cache_compatibility.json`이 현재 SQL의 쿼리를 그 namespace로 매핑해 기존 parquet을 재사용하기 때문이며, 폴더 이름이 지금 notebook 번호와 달라도 잔존물이 아니다.
 
 ## Fingerprint
 
@@ -38,4 +39,4 @@ Cache는 언제든 현재 SQL과 원본 DB에서 재생성할 수 있는 로컬 
 
 ## Tableau export
 
-`tableau/export_tableau.py`와 `tableau/export_workbook_compat.py`는 DB를 재조회하지 않는다. 현재 `sql/eda.sql`과 `sql/cache_compatibility.json`으로 쿼리·마트 정의·기존 캐시 출처를 검증한 결과만 읽는다. legacy cache나 provenance 불일치 cache가 있으면 export를 중단한다.
+`tableau/export_dashboard_source.py`는 DB를 재조회하지 않는다. 현재 `sql/eda.sql`과 `sql/cache_compatibility.json`으로 쿼리·마트 정의·기존 캐시 출처를 검증한 결과만 읽어 `tableau/dashboard_*.csv` 6개를 만든다. legacy cache나 provenance 불일치 cache가 있으면 export를 중단한다.
